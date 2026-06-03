@@ -5,6 +5,12 @@ data/settings.json
 data/skills.json
 data/llm_history.json
 data/alt_data/
+data/datasets/
+data/imports/
+data/runs/
+data/segments/
+data/uploads/
+data/state.json
 
 # -- Intermediate build / test artifacts -------------------------------------
 data/*.bak
@@ -36,6 +42,11 @@ Thumbs.db
 
 # -- AI scratch files --------------------------------------------------------
 .scratch/
+.claude/
+.codegraph/
 CLAUDE.md
 sync.cmd
 ai.md
+
+# -- Local stray files --------------------------------------------------------
+train.bat .txt

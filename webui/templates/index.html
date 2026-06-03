@@ -137,22 +137,11 @@
 <div id="tab-train" class="tab-content">
   <div class="train-sections">
 
-    <!-- Datasets (Projects) panel -->
-    <section class="card">
-      <div class="toolbar" style="margin-bottom:8px">
-        <h3>データセット (Projects)</h3>
-        <button id="btn-refresh-datasets" class="icon-btn" title="更新">⟳</button>
-      </div>
-      <div id="dataset-list" class="dataset-list">
-        <span class="dim" style="font-size:12px">データセットなし</span>
-      </div>
-    </section>
-
     <section class="card">
       <h3><span class="step-badge">1</span> データセット構築</h3>
       <div class="form-grid">
         <label>キャラクター名（speaker） <input type="text" id="speaker-name" placeholder="例: 桜十字エルデリーゼ"></label>
-        <label>出力先データセット名 <input type="text" id="job-name" placeholder="空欄でキャラクター名と同じ"></label>
+        <label>出力先データセット名（フォルダ名） <input type="text" id="job-name" placeholder="空欄でキャラクター名と同じ"></label>
       </div>
       <div id="dataset-dirty-msg" class="hidden" style="font-size:12px;color:var(--warning);margin:4px 0">
         ⚠ セグメントが変更されています。反映するには再度「データセット構築」を実行してください。

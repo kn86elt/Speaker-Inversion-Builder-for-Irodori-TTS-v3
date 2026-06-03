@@ -7,7 +7,7 @@ var currentFileId = null;
 var wavesurfer = null;
 var splitMarkers = [];   // seconds within current file
 var loopEnabled = false;
-var selState = { active: false, startT: 0, endT: 0, startX: 0, hasDrag: false };
+var selState = { active: false, confirmed: false, startT: 0, endT: 0, startX: 0, hasDrag: false };
 var settings = { irodori_root: '', uv_exe: '', checkpoint_path: '' };
 var suggestedIrodoriRoot = '';
 
@@ -124,7 +124,6 @@ function bindUI() {
   document.getElementById('btn-build-dataset').addEventListener('click', function () {
     withSpinner(this, function () { return buildDataset(false); });
   });
-  document.getElementById('btn-refresh-datasets').addEventListener('click', refreshDatasets);
   document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDatasets);
   document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDataDatasetProjects);
   document.getElementById('btn-prepare-manifest').addEventListener('click', prepareManifest);
@@ -154,43 +153,56 @@ function bindWaveformInteraction() {
   overlay.addEventListener('mousedown', function (e) {
     if (!wavesurfer) return;
     selState.active = true;
+    selState.confirmed = false;
     selState.hasDrag = false;
     selState.startX = e.clientX;
     selState.startT = xToTime(e, overlay);
     selState.endT = selState.startT;
+    document.getElementById('wf-sel').classList.add('hidden');
+    updateSelectionToolbar();
   });
 
   overlay.addEventListener('mousemove', function (e) {
     if (!selState.active || !wavesurfer) return;
-    if (Math.abs(e.clientX - selState.startX) > DRAG_PX) {
+    if (selState.hasDrag || Math.abs(e.clientX - selState.startX) > DRAG_PX) {
       selState.hasDrag = true;
       selState.endT = clampTime(xToTime(e, overlay));
       updateSelBox(selBox);
+      updateSelectionToolbar();
     }
   });
 
-  overlay.addEventListener('mouseup', function (e) {
-    if (!wavesurfer) { selState.active = false; return; }
+  function finishSelection(e) {
+    if (!selState.active) return;
+    if (!wavesurfer) { clearSelection(); return; }
     var finalT = clampTime(xToTime(e, overlay));
-    if (Math.abs(finalT - selState.startT) > 0.001) {
+    if (selState.hasDrag || Math.abs(e.clientX - selState.startX) > DRAG_PX) {
       selState.hasDrag = true;
       selState.endT = finalT;
       updateSelBox(selBox);
     }
     if (!selState.hasDrag) {
-      // plain click → seek
+      // plain click -> seek
       wavesurfer.setTime(clampTime(xToTime(e, overlay)));
       clearSelection();
+      return;
+    }
+    selState.active = false;
+    selState.endT = finalT;
+    if (selEnd() - selStart() <= 0.001) {
+      clearSelection();
     } else {
-      selState.endT = finalT;
+      selState.confirmed = true;
       updateSelBox(selBox);
       showSelToolbar();
     }
-    selState.active = false;
-  });
+  }
 
-  // Cancel drag if mouse leaves window
-  document.addEventListener('mouseup', function () { selState.active = false; });
+  overlay.addEventListener('mouseup', finishSelection);
+  document.addEventListener('mouseup', finishSelection);
+  window.addEventListener('blur', function () {
+    if (selState.active) clearSelection();
+  });
 }
 
 function xToTime(e, el) {
@@ -203,6 +215,9 @@ function clampTime(t) {
 }
 function selStart() { return Math.min(selState.startT, selState.endT); }
 function selEnd()   { return Math.max(selState.startT, selState.endT); }
+function hasSelectionRange() {
+  return !!(wavesurfer && selState.confirmed && selEnd() - selStart() > 0.001);
+}
 
 function updateSelBox(box) {
   var dur = wavesurfer ? wavesurfer.getDuration() : 1;
@@ -225,7 +240,7 @@ function showSelToolbar() {
 
 function updateSelectionToolbar() {
   var info = document.getElementById('sel-info');
-  var hasSelection = !!(wavesurfer && selState.hasDrag && selEnd() > selStart());
+  var hasSelection = hasSelectionRange();
   ['btn-play-sel', 'btn-extract-sel', 'btn-markers-at-sel', 'btn-delete-sel', 'btn-clear-sel'].forEach(function (id) {
     var btn = document.getElementById(id);
     if (btn) btn.disabled = !hasSelection;
@@ -240,6 +255,8 @@ function updateSelectionToolbar() {
 }
 
 function clearSelection() {
+  selState.active = false;
+  selState.confirmed = false;
   selState.hasDrag = false;
   document.getElementById('wf-sel').classList.add('hidden');
   document.getElementById('sel-toolbar').classList.remove('hidden');
@@ -247,7 +264,7 @@ function clearSelection() {
 }
 
 function playSelection() {
-  if (!wavesurfer || !selState.hasDrag) return;
+  if (!hasSelectionRange()) return;
   var s = selStart(), e = selEnd();
   wavesurfer.setTime(s);
   wavesurfer.play();
@@ -256,21 +273,23 @@ function playSelection() {
 }
 
 function extractSelection() {
-  if (!currentFileId || !selState.hasDrag) return;
+  if (!currentFileId || !hasSelectionRange()) return;
+  var start = selStart(), end = selEnd();
   var btn = document.getElementById('btn-extract-sel');
   withSpinner(btn, function () {
-    return api('/api/file/' + encodeURIComponent(currentFileId) + '/extract_range', 'POST', { start: selStart(), end: selEnd() })
+    return api('/api/file/' + encodeURIComponent(currentFileId) + '/extract_range', 'POST', { start: start, end: end })
       .then(function () { clearSelection(); refreshState(); });
   });
 }
 
 function deleteSelection() {
-  if (!currentFileId || !selState.hasDrag) return;
+  if (!currentFileId || !hasSelectionRange()) return;
   if (!confirm('選択範囲を削除します。続行しますか？')) return;
   var fileId = currentFileId;
+  var start = selStart(), end = selEnd();
   var btn = document.getElementById('btn-delete-sel');
   withSpinner(btn, function () {
-    return api('/api/file/' + encodeURIComponent(fileId) + '/delete_range', 'POST', { start: selStart(), end: selEnd() })
+    return api('/api/file/' + encodeURIComponent(fileId) + '/delete_range', 'POST', { start: start, end: end })
       .then(function () {
         clearMarkers();
         clearSelection();
@@ -284,7 +303,7 @@ function deleteSelection() {
 }
 
 function markersAtSelection() {
-  if (!selState.hasDrag) return;
+  if (!hasSelectionRange()) return;
   [selStart(), selEnd()].forEach(function (t) {
     if (splitMarkers.indexOf(t) === -1) splitMarkers.push(t);
   });
@@ -440,6 +459,7 @@ function clearDataPrep() {
     document.getElementById('waveform-time').textContent = 'ファイルを選択してください';
     document.getElementById('waveform-controls').classList.add('hidden');
     document.getElementById('file-info-bar').classList.add('hidden');
+    resetDatasetBuildForm();
     return refreshStatePromise();
   }).then(function () {
     clearDatasetDirty();
@@ -531,7 +551,7 @@ function selectFile(fileId) {
     console.error('WaveSurfer error', e);
   });
 
-  wavesurfer.load('/audio/upload/' + encodeURIComponent(fileId));
+  wavesurfer.load('/audio/upload/' + encodeURIComponent(fileId) + '?v=' + Date.now());
 }
 
 function showFileInfo(fileId, f) {
@@ -833,6 +853,15 @@ function clearDatasetDirty() {
   document.getElementById('dataset-dirty-msg').classList.add('hidden');
 }
 
+function resetDatasetBuildForm() {
+  document.getElementById('speaker-name').value = '';
+  document.getElementById('job-name').value = '';
+  document.getElementById('build-result').textContent = '';
+  var paths = document.getElementById('build-paths');
+  paths.innerHTML = '';
+  paths.classList.add('hidden');
+}
+
 // ─── Training ─────────────────────────────────────────────────────────────────
 function getDatasetNames() {
   var speakerName = document.getElementById('speaker-name').value.trim();
@@ -901,6 +930,7 @@ function buildDataset(overwrite) {
 function refreshDatasets() {
   api('/api/datasets').then(function (data) {
     var el = document.getElementById('dataset-list');
+    if (!el) return;
     if (!data.datasets.length) {
       el.innerHTML = '<span class="dim" style="font-size:12px">データセットなし</span>';
       return;
