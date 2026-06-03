@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import uuid
@@ -369,8 +370,6 @@ def _transcribe_error(proc: Any) -> str:
 
 
 def _do_transcribe_many(wav_paths: list[Path]) -> dict[str, str]:
-    import subprocess
-
     if not wav_paths:
         return {}
     worker = WEBUI_DIR / "transcribe_worker.py"
@@ -923,6 +922,7 @@ async def transcribe_all_segments():
         loop = asyncio.get_event_loop()
         total = len(pending)
         yield f"data: {json.dumps({'total': total})}\n\n"
+
         jobs: list[tuple[dict, Path]] = []
         missing: set[str] = set()
         for seg in pending:
@@ -932,32 +932,85 @@ async def transcribe_all_segments():
             else:
                 missing.add(seg["id"])
 
-        try:
-            texts = await loop.run_in_executor(_thread_pool, _do_transcribe_many, [p for _, p in jobs])
-        except Exception as exc:
-            err = str(exc)
-            for i, seg in enumerate(pending):
-                yield f"data: {json.dumps({'id': seg['id'], 'error': err, 'progress': i + 1, 'total': total})}\n\n"
-            yield f"data: {json.dumps({'done': True, 'failed': total})}\n\n"
-            return
+        seg_by_path: dict[str, dict] = {str(p.resolve()): seg for seg, p in jobs}
+        wav_paths = [p for _, p in jobs]
+        queue: asyncio.Queue = asyncio.Queue()
 
-        job_by_id = {seg["id"]: p for seg, p in jobs}
+        def run_worker():
+            if not wav_paths:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+                return
+            worker = WEBUI_DIR / "transcribe_worker.py"
+            device = os.environ.get("WHISPER_DEVICE", "cpu")
+            cmd = [sys.executable, str(worker), "--device", device] + [str(p) for p in wav_paths]
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    env=_transcribe_env(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line:
+                        loop.call_soon_threadsafe(queue.put_nowait, ("line", line))
+                proc.wait()
+                if proc.returncode != 0:
+                    err = (proc.stderr.read() or "").strip() or f"exit code {proc.returncode}"
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", err))
+                else:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+        _thread_pool.submit(run_worker)
+
+        progress = 0
         failed = 0
-        for i, seg in enumerate(pending):
+        completed_ids: set[str] = set()
+
+        for seg in pending:
             if seg["id"] in missing:
                 failed += 1
-                yield f"data: {json.dumps({'id': seg['id'], 'error': 'file missing', 'progress': i + 1, 'total': total})}\n\n"
-                continue
-            path = job_by_id.get(seg["id"])
-            text = texts.get(str(path.resolve()), "") if path else ""
-            with _state_lock:
-                s = next((x for x in _state["segments"] if x["id"] == seg["id"]), None)
-                if s:
-                    s["text"] = text
-                    s["transcribed"] = True
-                _save_state(_state)
-            yield f"data: {json.dumps({'id': seg['id'], 'text': text, 'progress': i + 1, 'total': total})}\n\n"
-        yield f"data: {json.dumps({'done': True})}\n\n"
+                progress += 1
+                completed_ids.add(seg["id"])
+                yield f"data: {json.dumps({'id': seg['id'], 'error': 'file missing', 'progress': progress, 'total': total})}\n\n"
+
+        while True:
+            kind, data = await queue.get()
+            if kind == "error":
+                for seg in pending:
+                    if seg["id"] not in completed_ids:
+                        failed += 1
+                        progress += 1
+                        yield f"data: {json.dumps({'id': seg['id'], 'error': data, 'progress': progress, 'total': total})}\n\n"
+                break
+            elif kind == "done":
+                break
+            elif kind == "line":
+                try:
+                    item = json.loads(data)
+                    path_str = str(Path(str(item.get("path") or "")).resolve())
+                    seg = seg_by_path.get(path_str)
+                    if seg and seg["id"] not in completed_ids:
+                        text = str(item.get("text", "")).strip()
+                        progress += 1
+                        completed_ids.add(seg["id"])
+                        with _state_lock:
+                            s = next((x for x in _state["segments"] if x["id"] == seg["id"]), None)
+                            if s:
+                                s["text"] = text
+                                s["transcribed"] = True
+                            _save_state(_state)
+                        yield f"data: {json.dumps({'id': seg['id'], 'text': text, 'progress': progress, 'total': total})}\n\n"
+                except Exception:
+                    pass
+
+        yield f"data: {json.dumps({'done': True, 'failed': failed})}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

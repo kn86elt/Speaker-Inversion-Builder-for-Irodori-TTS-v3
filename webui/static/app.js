@@ -454,8 +454,10 @@ function handleFileUpload(fileList) {
   for (var i = 0; i < fileList.length; i++) form.append('files', fileList[i]);
   var drop = document.getElementById('drop-area');
   drop.innerHTML = '<span class="spinner"></span>';
-  api('/api/upload', 'POST', form).then(function () {
-    refreshState();
+  api('/api/upload', 'POST', form).then(function (res) {
+    return refreshStatePromise().then(function () {
+      if (res.added && res.added.length) selectFile(res.added[0]);
+    });
   }).catch(function (e) {
     alert('Upload error: ' + e.message);
   }).finally(function () {
