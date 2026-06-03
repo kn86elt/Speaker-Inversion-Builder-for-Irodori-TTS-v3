@@ -312,7 +312,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .seg-text.unsaved { border-color: var(--warning); }
 
 /* ─── Training ───────────────────────────────────────────────── */
-.train-sections { display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
+.train-layout { display: grid; grid-template-columns: minmax(520px, 860px) minmax(360px, 1fr); gap: 16px; align-items: start; }
+.train-sections { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.train-log-card { min-width: 0; }
+.train-log-card .log-output { height: min(680px, calc(100vh - 180px)); min-height: 420px; }
 .step-badge {
   display: inline-flex;
   align-items: center;
@@ -343,6 +346,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .log-output .log-error { color: #ff6b6b; }
 .log-output .log-done { color: var(--success); }
+
+@media (max-width: 980px) {
+  .train-layout { grid-template-columns: 1fr; }
+  .train-log-card .log-output { height: 320px; min-height: 320px; }
+}
 
 /* ─── Misc ───────────────────────────────────────────────────── */
 .dim { color: var(--dim); }

@@ -135,12 +135,13 @@
 
 <!-- ═══════════════════════ Tab: 学習 ═══════════════════════ -->
 <div id="tab-train" class="tab-content">
+  <div class="train-layout">
   <div class="train-sections">
 
     <section class="card">
       <h3><span class="step-badge">1</span> データセット構築</h3>
       <div class="form-grid">
-        <label>キャラクター名（speaker） <input type="text" id="speaker-name" placeholder="例: 桜十字エルデリーゼ"></label>
+        <label>キャラクター名（speaker） <input type="text" id="speaker-name" placeholder="例: テンプレちゃん"></label>
         <label>出力先データセット名（フォルダ名） <input type="text" id="job-name" placeholder="空欄でキャラクター名と同じ"></label>
       </div>
       <div id="dataset-dirty-msg" class="hidden" style="font-size:12px;color:var(--warning);margin:4px 0">
@@ -164,6 +165,7 @@
       </div>
       <div class="action-row">
         <button id="btn-prepare-manifest" class="primary">Manifest 準備実行</button>
+        <span id="manifest-result" class="dim"></span>
       </div>
     </section>
 
@@ -192,10 +194,11 @@
 
   </div>
 
-  <section class="card log-card">
-    <h3>ログ</h3>
-    <div id="train-log" class="log-output"></div>
-  </section>
+    <section class="card log-card train-log-card">
+      <h3>ログ</h3>
+      <div id="train-log" class="log-output"></div>
+    </section>
+  </div>
 </div>
 
 <!-- ═══════════════════════ Tab: テスト ═══════════════════════ -->
@@ -213,8 +216,8 @@
             <button id="btn-refresh-runs" title="更新">⟳</button>
           </div>
         </label>
-        <label style="grid-column:span 2">カスタムパス
-          <input type="text" id="embed-path-custom" placeholder="直接パスを入力する場合">
+        <label style="grid-column:span 2">Speaker Embedding 直接パス（.speaker.safetensors）
+          <input type="text" id="embed-path-custom" placeholder="一覧にない .speaker.safetensors を指定する場合">
         </label>
         <label style="grid-column:span 2">テキスト
           <textarea id="test-text" rows="4" placeholder="こんにちは。今日もよろしくお願いします。"></textarea>
@@ -247,7 +250,8 @@
     <div class="form-grid">
       <label style="grid-column:span 2">Irodori-TTS ルートパス
         <div class="input-row">
-          <input type="text" id="set-irodori-root" placeholder="例: C:\usr\sd\Irodori-TTS-v3">
+          <input type="text" id="set-irodori-root" placeholder="例: C:\path\to\Irodori-TTS-v3">
+          <button type="button" id="btn-browse-root-settings">参照</button>
           <button type="button" id="btn-open-root-modal">指定</button>
         </div>
       </label>
@@ -275,7 +279,10 @@
     <h3 id="irodori-root-title">Irodori-TTS v3 ルートディレクトリ</h3>
     <p class="dim">学習・生成に使うIrodori-TTS-v3本体のフォルダを指定してください。</p>
     <label>Irodori-TTS ルートパス
-      <input type="text" id="modal-irodori-root" placeholder="例: C:\usr\sd\Irodori-TTS-v3">
+      <div class="input-row">
+        <input type="text" id="modal-irodori-root" placeholder="例: C:\path\to\Irodori-TTS-v3">
+        <button type="button" id="btn-browse-root-modal">参照</button>
+      </div>
     </label>
     <div class="action-row">
       <button type="button" id="btn-save-root-modal" class="primary">保存</button>

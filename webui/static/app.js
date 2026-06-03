@@ -2,7 +2,7 @@
 // WaveSurfer loaded globally via wavesurfer.min.js (UMD)
 
 // ─── Global state ────────────────────────────────────────────────────────────
-var state = { files: {}, segments: [] };
+var state = { files: {}, segments: [], markers: {} };
 var currentFileId = null;
 var wavesurfer = null;
 var splitMarkers = [];   // seconds within current file
@@ -126,16 +126,26 @@ function bindUI() {
   });
   document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDatasets);
   document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDataDatasetProjects);
-  document.getElementById('btn-prepare-manifest').addEventListener('click', prepareManifest);
+  document.getElementById('btn-prepare-manifest').addEventListener('click', function () {
+    withSpinner(this, prepareManifest);
+  });
   document.getElementById('btn-train').addEventListener('click', startTraining);
 
   // Test tab
   document.getElementById('btn-refresh-runs').addEventListener('click', refreshRuns);
-  document.getElementById('btn-generate').addEventListener('click', generateAudio);
+  document.getElementById('btn-generate').addEventListener('click', function () {
+    withSpinner(this, generateAudio);
+  });
 
   // Settings
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
   document.getElementById('btn-open-root-modal').addEventListener('click', function () { showRootModal(false); });
+  document.getElementById('btn-browse-root-settings').addEventListener('click', function () {
+    browseIrodoriRoot('set-irodori-root', 'settings-status', this);
+  });
+  document.getElementById('btn-browse-root-modal').addEventListener('click', function () {
+    browseIrodoriRoot('modal-irodori-root', 'root-modal-status', this);
+  });
   document.getElementById('btn-save-root-modal').addEventListener('click', saveRootModal);
   document.getElementById('btn-close-root-modal').addEventListener('click', function () {
     if (!settings.irodori_root) return;
@@ -310,6 +320,7 @@ function markersAtSelection() {
   splitMarkers.sort(function (a, b) { return a - b; });
   renderMarkers();
   renderMarkerOverlays();
+  persistMarkers();
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
@@ -369,6 +380,35 @@ function hideRootModal() {
   document.getElementById('irodori-root-modal').classList.add('hidden');
 }
 
+function browseIrodoriRoot(inputId, statusId, btn) {
+  var status = document.getElementById(statusId);
+  var run = function () {
+    if (status) {
+      status.textContent = 'フォルダを選択してください...';
+      status.style.color = 'var(--dim)';
+    }
+    return api('/api/browse/irodori_root').then(function (res) {
+      if (!res.path) {
+        if (status) status.textContent = '';
+        return res;
+      }
+      document.getElementById(inputId).value = res.path;
+      if (status) {
+        status.textContent = '選択しました';
+        status.style.color = 'var(--success)';
+      }
+      return res;
+    }).catch(function (e) {
+      if (status) {
+        status.textContent = '参照エラー: ' + e.message;
+        status.style.color = 'var(--danger)';
+      }
+      throw e;
+    });
+  };
+  return btn ? withSpinner(btn, run) : run();
+}
+
 function saveRootModal() {
   var root = document.getElementById('modal-irodori-root').value.trim();
   var status = document.getElementById('root-modal-status');
@@ -401,6 +441,7 @@ function ensureIrodoriRoot() {
 function refreshState() {
   api('/api/state').then(function (data) {
     state = data;
+    state.markers = state.markers || {};
     renderFileList();
     renderSegmentList();
   }).catch(function (e) { console.error('refreshState', e); });
@@ -500,7 +541,7 @@ function renderFileList() {
 // ─── Select file → load waveform ──────────────────────────────────────────────
 function selectFile(fileId) {
   currentFileId = fileId;
-  clearMarkers();
+  restoreMarkersForFile(fileId);
   clearSelection();
   renderFileList();
 
@@ -609,6 +650,7 @@ function detectAutoMarkers() {
       splitMarkers.sort(function (a, b) { return a - b; });
       renderMarkers();
       renderMarkerOverlays();
+      persistMarkers();
       if (res.markers.length === 0) {
         setStatus('No silence gaps detected. Try a lower threshold (e.g. -50 dB).', true);
       } else {
@@ -626,13 +668,55 @@ function addMarkerAtCurrent() {
     splitMarkers.sort(function (a, b) { return a - b; });
     renderMarkers();
     renderMarkerOverlays();
+    persistMarkers();
   }
 }
 
-function clearMarkers() {
+function clearMarkers(options) {
   splitMarkers = [];
   renderMarkers();
   renderMarkerOverlays();
+  if (!(options && options.persist === false)) persistMarkers();
+}
+
+function normaliseMarkers(values) {
+  var seen = {};
+  var out = [];
+  (values || []).forEach(function (value) {
+    var t = parseFloat(value);
+    if (!isFinite(t) || t <= 0) return;
+    t = Math.round(t * 1000) / 1000;
+    var key = String(t);
+    if (!seen[key]) {
+      seen[key] = true;
+      out.push(t);
+    }
+  });
+  out.sort(function (a, b) { return a - b; });
+  return out;
+}
+
+function restoreMarkersForFile(fileId) {
+  state.markers = state.markers || {};
+  splitMarkers = normaliseMarkers(state.markers[fileId] || []);
+  renderMarkers();
+  renderMarkerOverlays();
+}
+
+function persistMarkers() {
+  if (!currentFileId) return Promise.resolve();
+  state.markers = state.markers || {};
+  splitMarkers = normaliseMarkers(splitMarkers);
+  if (splitMarkers.length) state.markers[currentFileId] = splitMarkers.slice();
+  else delete state.markers[currentFileId];
+  return api('/api/file/' + encodeURIComponent(currentFileId) + '/markers', 'PUT', { markers: splitMarkers })
+    .then(function (res) {
+      if (res.markers && res.markers.length) state.markers[currentFileId] = res.markers;
+      else delete state.markers[currentFileId];
+      return res;
+    }).catch(function (e) {
+      setStatus('Marker save error: ' + e.message, true);
+    });
 }
 
 // Chip list below controls
@@ -671,6 +755,7 @@ function renderMarkers() {
         splitMarkers.splice(idx, 1);
         renderMarkers();
         renderMarkerOverlays();
+        persistMarkers();
       };
     })(i));
 
@@ -733,7 +818,7 @@ function doSplit(segId) {
 }
 
 function refreshStatePromise() {
-  return api('/api/state').then(function (data) { state = data; renderFileList(); renderSegmentList(); });
+  return api('/api/state').then(function (data) { state = data; state.markers = state.markers || {}; renderFileList(); renderSegmentList(); });
 }
 
 // ─── Segment list ─────────────────────────────────────────────────────────────
@@ -820,20 +905,27 @@ function deleteSegment(segId) {
 function transcribeAll() {
   var btn = document.getElementById('btn-transcribe-all');
   var prog = document.getElementById('transcribe-progress');
+  var failed = 0;
   withSpinner(btn, function () {
     prog.textContent = 'Starting...';
     return fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
       if (event.total !== undefined) prog.textContent = '0 / ' + event.total;
       if (event.progress !== undefined) {
         prog.textContent = event.progress + ' / ' + event.total;
+        if (event.error) {
+          failed += 1;
+          prog.textContent += ' (' + failed + ' failed)';
+          setStatus('Transcription error: ' + event.error, true);
+          return;
+        }
         var seg = state.segments.find(function (s) { return s.id === event.id; });
-        if (seg && event.text) {
+        if (seg && event.text !== undefined) {
           seg.text = event.text; seg.transcribed = true;
           var card = document.querySelector('.seg-card[data-id="' + event.id + '"]');
           if (card) { card.querySelector('.seg-text').value = event.text; card.classList.remove('untranscribed'); }
         }
       }
-      if (event.done) prog.textContent = 'Done';
+      if (event.done) prog.textContent = failed ? 'Done (' + failed + ' failed)' : 'Done';
     }).catch(function (e) { prog.textContent = 'Error: ' + e.message; });
   });
 }
@@ -983,21 +1075,37 @@ function loadDatasetProject(name) {
 }
 
 function prepareManifest() {
-  if (!ensureIrodoriRoot()) return;
+  if (!ensureIrodoriRoot()) return Promise.resolve();
   var names = getDatasetNames();
-  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return; }
+  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return Promise.resolve(); }
   document.getElementById('job-name').value = names.jobName;
   var log = document.getElementById('train-log');
+  var result = document.getElementById('manifest-result');
   log.textContent = '';
+  result.textContent = '';
+  result.style.color = 'var(--dim)';
   appendLog(log, 'Starting manifest preparation...\n', '');
-  fetchSSE('/api/prepare_manifest', 'POST', {
+  return fetchSSE('/api/prepare_manifest', 'POST', {
     job_name: names.jobName,
     device: document.getElementById('prep-device').value,
     normalize_db: document.getElementById('normalize-db').value,
     max_seconds: parseFloat(document.getElementById('max-seconds').value || '0'),
     irodori_root: settings.irodori_root,
     uv_exe: settings.uv_exe,
-  }, function (ev) { handleLogEvent(ev, log); }).catch(function (e) {
+  }, function (ev) {
+    handleLogEvent(ev, log);
+    if (ev.done) {
+      if (ev.rc === 0) {
+        result.textContent = 'Manifest 準備完了';
+        result.style.color = 'var(--success)';
+      } else {
+        result.textContent = 'Manifest 準備失敗';
+        result.style.color = 'var(--danger)';
+      }
+    }
+  }).catch(function (e) {
+    result.textContent = 'Manifest 準備失敗';
+    result.style.color = 'var(--danger)';
     appendLog(log, 'Error: ' + e.message + '\n', 'log-error');
   });
 }
@@ -1055,16 +1163,16 @@ function refreshRuns() {
 }
 
 function generateAudio() {
-  if (!ensureIrodoriRoot()) return;
+  if (!ensureIrodoriRoot()) return Promise.resolve();
   var log = document.getElementById('gen-log');
   var outputSection = document.getElementById('output-section');
   log.textContent = ''; outputSection.classList.add('hidden');
   var embPath = document.getElementById('embed-select').value || document.getElementById('embed-path-custom').value.trim();
-  if (!embPath) { alert('Select a speaker embedding'); return; }
+  if (!embPath) { alert('Select a speaker embedding'); return Promise.resolve(); }
   var text = document.getElementById('test-text').value.trim();
-  if (!text) { alert('Enter text to synthesize'); return; }
+  if (!text) { alert('Enter text to synthesize'); return Promise.resolve(); }
   appendLog(log, 'Starting generation...\n', '');
-  fetchSSE('/api/generate', 'POST', {
+  return fetchSSE('/api/generate', 'POST', {
     text: text, embedding_path: embPath, checkpoint_path: settings.checkpoint_path,
     output_name: 'output_' + Date.now(),
     num_steps: parseInt(document.getElementById('gen-steps').value, 10),

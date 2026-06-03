@@ -1,17 +1,15 @@
 # -- Downloaded / generated data (large or user-specific) -------------------
-data/danbooru.csv
-data/ja.csv
-data/settings.json
-data/skills.json
-data/llm_history.json
-data/alt_data/
+data/*
 data/datasets/
 data/imports/
 data/runs/
 data/segments/
 data/uploads/
 data/state.json
-
+data/hf-cache/
+data/logs/
+data/uv-cache/
+outputs/
 # -- Intermediate build / test artifacts -------------------------------------
 data/*.bak
 data/*.broken.json

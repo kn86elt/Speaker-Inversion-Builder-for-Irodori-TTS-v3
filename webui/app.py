@@ -28,6 +28,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 SEGMENTS_DIR = DATA_DIR / "segments"
 OUTPUTS_DIR = DATA_DIR / "outputs"
+LOGS_DIR = DATA_DIR / "logs"
 STATE_FILE = DATA_DIR / "state.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 IMPORTS_DIR = DATA_DIR / "imports"
@@ -35,18 +36,34 @@ IMPORTS_DIR = DATA_DIR / "imports"
 DATASETS_DIR = DATA_DIR / "datasets"          # dataset projects
 SPEAKER_OUTPUTS_DIR = PROJECT_ROOT / "outputs"  # trained embeddings (above data/)
 
-for _d in (DATA_DIR, UPLOADS_DIR, SEGMENTS_DIR, OUTPUTS_DIR, DATASETS_DIR, SPEAKER_OUTPUTS_DIR, IMPORTS_DIR):
+for _d in (DATA_DIR, UPLOADS_DIR, SEGMENTS_DIR, OUTPUTS_DIR, LOGS_DIR, DATASETS_DIR, SPEAKER_OUTPUTS_DIR, IMPORTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# irodori-TTS root – overridable via --irodori-root CLI arg
-IRODORI_ROOT = Path("C:/usr/sd/Irodori-TTS-v3")
+
+def _default_irodori_root() -> Path:
+    env_root = os.environ.get("IRODORI_ROOT", "").strip()
+    candidates: list[Path] = []
+    if env_root:
+        candidates.append(Path(env_root))
+    candidates.extend([
+        PROJECT_ROOT.parent / "Irodori-TTS-v3",
+        PROJECT_ROOT / "Irodori-TTS-v3",
+    ])
+    for candidate in candidates:
+        if (candidate / "train.py").exists():
+            return candidate
+    return Path(env_root) if env_root else PROJECT_ROOT.parent / "Irodori-TTS-v3"
+
+
+# irodori-TTS root – overridable via settings, --irodori-root, or IRODORI_ROOT.
+IRODORI_ROOT = _default_irodori_root()
 
 # ─── State ────────────────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
 
 
 def _empty_state() -> dict:
-    return {"files": {}, "segments": []}
+    return {"files": {}, "segments": [], "markers": {}}
 
 
 def _load_state() -> dict:
@@ -65,6 +82,9 @@ def _save_state(state: dict) -> None:
 
 
 _state: dict[str, Any] = _load_state()
+_state.setdefault("files", {})
+_state.setdefault("segments", [])
+_state.setdefault("markers", {})
 
 
 def _load_settings() -> dict[str, str]:
@@ -97,6 +117,30 @@ def _effective_irodori_root(root: str = "") -> Path:
 
 def _effective_uv(override: str = "") -> str:
     return _find_uv(override or _settings.get("uv_exe", ""))
+
+
+def _browse_directory(initial_dir: Path, title: str) -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError(f"Folder browser is unavailable: {exc}") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    try:
+        selected = filedialog.askdirectory(
+            parent=root,
+            title=title,
+            initialdir=str(initial_dir if initial_dir.exists() else PROJECT_ROOT.parent),
+        )
+        return str(selected or "")
+    finally:
+        root.destroy()
 
 
 def _file_audio_path(file_id: str) -> Path | None:
@@ -185,6 +229,11 @@ async def _restore_project_state(project_state_path: Path) -> dict:
     with _state_lock:
         _state["files"] = loaded_files
         _state["segments"] = loaded_segments
+        _state["markers"] = {
+            str(fid): [float(v) for v in values if isinstance(v, (int, float))]
+            for fid, values in (project_state.get("markers") or {}).items()
+            if fid in loaded_files and isinstance(values, list)
+        }
         _state["last_built_dataset"] = project_name
         _state["dataset_dirty"] = True
         _save_state(_state)
@@ -300,32 +349,61 @@ def _delete_audio_range(src: Path, start_sec: float, end_sec: float, dst: Path) 
 
 
 # ─── Whisper ──────────────────────────────────────────────────────────────────
-def _do_transcribe(wav_path: Path) -> str:
+def _transcribe_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONFAULTHANDLER"] = "1"
+    env.setdefault("HF_HOME", str(DATA_DIR / "hf-cache"))
+    env.setdefault("HF_DATASETS_CACHE", str(DATA_DIR / "hf-cache" / "datasets"))
+    env.setdefault("HF_HUB_CACHE", str(DATA_DIR / "hf-cache" / "hub"))
+    ffmpeg_bin = env.get("FFMPEG_BIN", "").strip()
+    if ffmpeg_bin:
+        env["PATH"] = ffmpeg_bin + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _transcribe_error(proc: Any) -> str:
+    msg = (proc.stderr or proc.stdout or "").strip()
+    return msg or f"transcription failed with exit code {proc.returncode}"
+
+
+def _do_transcribe_many(wav_paths: list[Path]) -> dict[str, str]:
     import subprocess
 
-    irodori = _effective_irodori_root()
-    uv = _effective_uv()
+    if not wav_paths:
+        return {}
     worker = WEBUI_DIR / "transcribe_worker.py"
-    cmd = _uv_python(uv) + [str(worker), str(wav_path)]
+    cmd = [sys.executable, str(worker)] + [str(path) for path in wav_paths]
     proc = subprocess.run(
         cmd,
-        cwd=str(irodori),
-        env=_subprocess_env(irodori),
+        cwd=str(PROJECT_ROOT),
+        env=_transcribe_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
     )
     if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "").strip()
-        raise RuntimeError(msg or f"transcription failed with exit code {proc.returncode}")
-    lines = [line for line in proc.stdout.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    try:
-        return str(json.loads(lines[-1]).get("text", "")).strip()
-    except json.JSONDecodeError:
-        return lines[-1].strip()
+        raise RuntimeError(_transcribe_error(proc))
+
+    results: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        path = str(item.get("path") or "")
+        if path:
+            results[str(Path(path).resolve())] = str(item.get("text", "")).strip()
+    return results
+
+
+def _do_transcribe(wav_path: Path) -> str:
+    results = _do_transcribe_many([wav_path])
+    return results.get(str(wav_path.resolve()), "")
 
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
@@ -385,6 +463,7 @@ async def clear_data_prep():
     with _state_lock:
         _state["files"] = {}
         _state["segments"] = []
+        _state["markers"] = {}
         _state["dataset_dirty"] = False
         _save_state(_state)
     for root in (UPLOADS_DIR, SEGMENTS_DIR):
@@ -506,6 +585,7 @@ async def import_dataset_folder(files: list[UploadFile] = File(...)):
     with _state_lock:
         _state["files"] = loaded_files
         _state["segments"] = loaded_segments
+        _state["markers"] = {}
         _state["last_built_dataset"] = project_name
         _state["dataset_dirty"] = True
         _save_state(_state)
@@ -527,6 +607,7 @@ async def delete_file(file_id: str):
         del_segs = [s["id"] for s in _state["segments"] if s["file_id"] == file_id]
         _state["segments"] = [s for s in _state["segments"] if s["file_id"] != file_id]
         _state["files"].pop(file_id, None)
+        _state.setdefault("markers", {}).pop(file_id, None)
         _save_state(_state)
     for sid in del_segs:
         (SEGMENTS_DIR / f"{sid}.wav").unlink(missing_ok=True)
@@ -583,6 +664,10 @@ class MarkerParams(BaseModel):
     silence_thresh_db: float = -40.0
 
 
+class FileMarkersRequest(BaseModel):
+    markers: list[float] = []
+
+
 @app.post("/api/file/{file_id}/auto_markers")
 async def auto_markers(file_id: str, params: MarkerParams):
     wav = _file_audio_path(file_id)
@@ -593,6 +678,20 @@ async def auto_markers(file_id: str, params: MarkerParams):
         _thread_pool,
         _detect_silence_markers, wav, params.min_silence_ms, params.silence_thresh_db,
     )
+    return {"markers": markers}
+
+
+@app.put("/api/file/{file_id}/markers")
+async def save_file_markers(file_id: str, req: FileMarkersRequest):
+    with _state_lock:
+        if file_id not in _state.get("files", {}):
+            raise HTTPException(404)
+        markers = sorted({round(float(t), 3) for t in req.markers if float(t) > 0})
+        if markers:
+            _state.setdefault("markers", {})[file_id] = markers
+        else:
+            _state.setdefault("markers", {}).pop(file_id, None)
+        _save_state(_state)
     return {"markers": markers}
 
 
@@ -801,7 +900,10 @@ async def transcribe_segment(seg_id: str):
     if not p:
         raise HTTPException(404)
     loop = asyncio.get_event_loop()
-    text = await loop.run_in_executor(_thread_pool, _do_transcribe, p)
+    try:
+        text = await loop.run_in_executor(_thread_pool, _do_transcribe, p)
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
     with _state_lock:
         seg = next((s for s in _state["segments"] if s["id"] == seg_id), None)
         if seg:
@@ -820,22 +922,40 @@ async def transcribe_all_segments():
         loop = asyncio.get_event_loop()
         total = len(pending)
         yield f"data: {json.dumps({'total': total})}\n\n"
-        for i, seg in enumerate(pending):
+        jobs: list[tuple[dict, Path]] = []
+        missing: set[str] = set()
+        for seg in pending:
             p = _segment_audio_path(seg)
-            if not p:
+            if p:
+                jobs.append((seg, p))
+            else:
+                missing.add(seg["id"])
+
+        try:
+            texts = await loop.run_in_executor(_thread_pool, _do_transcribe_many, [p for _, p in jobs])
+        except Exception as exc:
+            err = str(exc)
+            for i, seg in enumerate(pending):
+                yield f"data: {json.dumps({'id': seg['id'], 'error': err, 'progress': i + 1, 'total': total})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'failed': total})}\n\n"
+            return
+
+        job_by_id = {seg["id"]: p for seg, p in jobs}
+        failed = 0
+        for i, seg in enumerate(pending):
+            if seg["id"] in missing:
+                failed += 1
                 yield f"data: {json.dumps({'id': seg['id'], 'error': 'file missing', 'progress': i + 1, 'total': total})}\n\n"
                 continue
-            try:
-                text = await loop.run_in_executor(_thread_pool, _do_transcribe, p)
-                with _state_lock:
-                    s = next((x for x in _state["segments"] if x["id"] == seg["id"]), None)
-                    if s:
-                        s["text"] = text
-                        s["transcribed"] = True
-                    _save_state(_state)
-                yield f"data: {json.dumps({'id': seg['id'], 'text': text, 'progress': i + 1, 'total': total})}\n\n"
-            except Exception as exc:
-                yield f"data: {json.dumps({'id': seg['id'], 'error': str(exc), 'progress': i + 1, 'total': total})}\n\n"
+            path = job_by_id.get(seg["id"])
+            text = texts.get(str(path.resolve()), "") if path else ""
+            with _state_lock:
+                s = next((x for x in _state["segments"] if x["id"] == seg["id"]), None)
+                if s:
+                    s["text"] = text
+                    s["transcribed"] = True
+                _save_state(_state)
+            yield f"data: {json.dumps({'id': seg['id'], 'text': text, 'progress': i + 1, 'total': total})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
@@ -939,6 +1059,11 @@ async def build_dataset(req: BuildDatasetRequest):
     with _state_lock:
         state_files = {fid: dict(f) for fid, f in _state.get("files", {}).items()}
         state_segments = [dict(s) for s in _state.get("segments", [])]
+        state_markers = {
+            fid: list(values)
+            for fid, values in (_state.get("markers") or {}).items()
+            if fid in state_files and isinstance(values, list)
+        }
 
     saved_files: dict[str, dict] = {}
     for idx, (file_id, item) in enumerate(state_files.items(), 1):
@@ -967,6 +1092,7 @@ async def build_dataset(req: BuildDatasetRequest):
         "speaker": speaker,
         "files": saved_files,
         "segments": saved_segments,
+        "markers": state_markers,
     }
     with (dataset_dir / "project_state.json").open("w", encoding="utf-8") as f:
         json.dump(project_state, f, ensure_ascii=False, indent=2)
@@ -1027,6 +1153,10 @@ async def list_datasets():
 @app.post("/api/datasets/{name}/load")
 async def load_dataset_project(name: str):
     dataset_dir = DATASETS_DIR / name
+    project_state_path = dataset_dir / "project_state.json"
+    if project_state_path.exists():
+        return await _restore_project_state(project_state_path)
+
     source_jsonl = dataset_dir / "source.jsonl"
     if not source_jsonl.exists():
         raise HTTPException(404, f"Dataset '{name}' not found")
@@ -1080,6 +1210,10 @@ async def load_dataset_project(name: str):
             s for s in _state["segments"]
             if s.get("dataset_project") != name
         ] + segments
+        _state["markers"] = {
+            fid: values for fid, values in (_state.get("markers") or {}).items()
+            if fid in _state["files"]
+        }
         _state["last_built_dataset"] = name
         _state["dataset_dirty"] = False
         _save_state(_state)
@@ -1153,6 +1287,23 @@ async def save_settings(req: SettingsRequest):
     return {"ok": True, **_settings}
 
 
+@app.get("/api/browse/irodori_root")
+async def browse_irodori_root():
+    saved_root = _settings.get("irodori_root", "").strip()
+    initial = Path(saved_root) if saved_root else IRODORI_ROOT
+    loop = asyncio.get_event_loop()
+    try:
+        selected = await loop.run_in_executor(
+            _thread_pool,
+            _browse_directory,
+            initial,
+            "Select Irodori-TTS v3 folder",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {"path": selected}
+
+
 # ─── uv helper ───────────────────────────────────────────────────────────────
 
 def _find_uv(override: str = "") -> str:
@@ -1211,10 +1362,10 @@ def _subprocess_env(irodori: Path) -> dict[str, str]:
     env["PYTHONUTF8"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONFAULTHANDLER"] = "1"
-    env.setdefault("UV_CACHE_DIR", str(irodori / ".uv-cache"))
-    env.setdefault("HF_HOME", str(irodori / ".hf-cache"))
-    env.setdefault("HF_DATASETS_CACHE", str(irodori / ".hf-cache" / "datasets"))
-    env.setdefault("HF_HUB_CACHE", str(irodori / ".hf-cache" / "hub"))
+    env["UV_CACHE_DIR"] = str(DATA_DIR / "uv-cache")
+    env["HF_HOME"] = str(DATA_DIR / "hf-cache")
+    env["HF_DATASETS_CACHE"] = str(DATA_DIR / "hf-cache" / "datasets")
+    env["HF_HUB_CACHE"] = str(DATA_DIR / "hf-cache" / "hub")
     ffmpeg_bin = env.get("FFMPEG_BIN", "").strip()
     if ffmpeg_bin:
         env["PATH"] = ffmpeg_bin + os.pathsep + env.get("PATH", "")
@@ -1222,6 +1373,21 @@ def _subprocess_env(irodori: Path) -> dict[str, str]:
     env.pop("CONDA_PREFIX", None)
     env.pop("CONDA_DEFAULT_ENV", None)
     return env
+
+
+def _log_path(kind: str, name: str) -> Path:
+    from datetime import datetime
+
+    safe_kind = "".join(c if c.isalnum() or c in "._-" else "_" for c in kind) or "run"
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name) or "job"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return LOGS_DIR / f"{safe_kind}_{safe_name}_{stamp}.log"
+
+
+def _append_log_line(log_path: Path, text: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(text + "\n")
 
 
 async def _detect_device(uv: str, irodori: Path) -> str:
@@ -1273,21 +1439,25 @@ def _write_train_scripts(
     # ── train.bat (Windows) ──────────────────────────────────────────────────
     bat = [
         "@echo off",
+        "chcp 65001 >nul",
+        "setlocal",
         ":: Speaker Inversion – standalone training script",
         f":: Dataset   : {name}",
         f":: Generated : {now}",
         ":: Edit the variables below to adjust parameters.",
-        "setlocal",
         "",
         f'set "UV={uv}"',
+        'set "SCRIPT_DIR=%~dp0"',
+        'for %%I in ("%SCRIPT_DIR%..\\..\\..") do set "WEBUI_ROOT=%%~fI"',
         f'set "IRODORI={irodori}"',
-        f'set "SOURCE_JSONL={source_jsonl}"',
-        f'set "MANIFEST={manifest}"',
-        f'set "LATENT_DIR={latent_dir}"',
+        'set "SOURCE_JSONL=%SCRIPT_DIR%source.jsonl"',
+        'set "MANIFEST=%SCRIPT_DIR%manifest.jsonl"',
+        'set "LATENT_DIR=%SCRIPT_DIR%latents"',
         f'set "CHECKPOINT={checkpoint}"',
         f'set "CONFIG={config}"',
-        f'set "OUTPUT_DIR={output_dir}"',
+        f'set "OUTPUT_DIR=%WEBUI_ROOT%\\outputs\\{name}"',
         f'set "SPEAKER_ID={name}"',
+        "rem Optional: set this to a full shared FFmpeg build bin directory; torchcodec may require the DLLs.",
         'set "FFMPEG_BIN="',
         'if not "%FFMPEG_BIN%"=="" set "PATH=%FFMPEG_BIN%;%PATH%"',
         'set "UV_CACHE_DIR=%IRODORI%\\.uv-cache"',
@@ -1309,6 +1479,13 @@ def _write_train_scripts(
         f'set "SAVE_EVERY={save_ev}"',
         f'set "NORMALIZE_DB={norm_db}"',
         "",
+        'if not exist "%UV%" ( echo [ERROR] uv not found: "%UV%" & pause & exit /b 1 )',
+        'if not exist "%IRODORI%\\train.py" ( echo [ERROR] Irodori root is invalid: "%IRODORI%" & pause & exit /b 1 )',
+        'if not exist "%WEBUI_ROOT%\\webui\\prepare_manifest_wrapper.py" ( echo [ERROR] prepare_manifest_wrapper.py not found under "%WEBUI_ROOT%\\webui" & pause & exit /b 1 )',
+        'if not exist "%SOURCE_JSONL%" ( echo [ERROR] source manifest not found: "%SOURCE_JSONL%" & pause & exit /b 1 )',
+        'if not exist "%CHECKPOINT%" ( echo [ERROR] checkpoint not found: "%CHECKPOINT%" & pause & exit /b 1 )',
+        'cd /d "%IRODORI%" || ( echo [ERROR] Failed to enter Irodori root: "%IRODORI%" & pause & exit /b 1 )',
+        "",
         'if /i "%DEVICE%"=="auto" (',
         '  set "DETECT_PY=%TEMP%\\irodori_detect_device_%RANDOM%.py"',
         '  > "%DETECT_PY%" echo import torch',
@@ -1327,7 +1504,7 @@ def _write_train_scripts(
         "echo [1/2] Preparing manifest...",
         'set "PREP_DEVICE=%DEVICE%"',
         ':prepare_manifest',
-        '"%UV%" run --no-sync python "%IRODORI%\\prepare_manifest.py" ^',
+        '"%UV%" run --no-sync python "%WEBUI_ROOT%\\webui\\prepare_manifest_wrapper.py" "%IRODORI%\\prepare_manifest.py" ^',
         '  --dataset json ^',
         '  --data-files "train=%SOURCE_JSONL%" ^',
         '  --split train ^',
@@ -1394,14 +1571,16 @@ def _write_train_scripts(
         f"# Generated : {now}",
         "set -e",
         "",
+        'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'WEBUI_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"',
         f'UV="{uv}"',
         f'IRODORI="{irodori}"',
-        f'SOURCE_JSONL="{source_jsonl}"',
-        f'MANIFEST="{manifest}"',
-        f'LATENT_DIR="{latent_dir}"',
+        'SOURCE_JSONL="$SCRIPT_DIR/source.jsonl"',
+        'MANIFEST="$SCRIPT_DIR/manifest.jsonl"',
+        'LATENT_DIR="$SCRIPT_DIR/latents"',
         f'CHECKPOINT="{checkpoint}"',
         f'CONFIG="{config}"',
-        f'OUTPUT_DIR="{output_dir}"',
+        f'OUTPUT_DIR="$WEBUI_ROOT/outputs/{name}"',
         f'SPEAKER_ID="{name}"',
         'FFMPEG_BIN="${FFMPEG_BIN:-}"',
         'if [ -n "$FFMPEG_BIN" ]; then export PATH="$FFMPEG_BIN:$PATH"; fi',
@@ -1531,9 +1710,12 @@ async def prepare_manifest(req: PrepareManifestRequest):
 
     requested_device = _normalise_device(req.device)
     primary_device = await _detect_device(uv, irodori) if requested_device == "auto" else requested_device
+    log_path = _log_path("manifest", req.job_name)
 
     def build_cmd(device: str) -> list[str]:
-        cmd = _uv_run(uv, irodori, "prepare_manifest.py") + [
+        cmd = _uv_python(uv) + [
+            str(WEBUI_DIR / "prepare_manifest_wrapper.py"),
+            str(irodori / "prepare_manifest.py"),
             "--dataset", "json",
             "--data-files", f"train={source_jsonl}",
             "--split", "train",
@@ -1551,25 +1733,34 @@ async def prepare_manifest(req: PrepareManifestRequest):
         return cmd
 
     async def stream_with_retry():
-        yield f"data: {json.dumps({'log': f'[INFO] Device: {primary_device}'})}\n\n"
-        yield f"data: {json.dumps({'log': '[INFO] If audio decoding fails on Windows, install/pass a full shared FFmpeg build on PATH.'})}\n\n"
+        for text in (
+            f"[INFO] Log file: {log_path}",
+            f"[INFO] Device: {primary_device}",
+            "[INFO] If audio decoding fails on Windows, install/pass a full shared FFmpeg build on PATH.",
+        ):
+            _append_log_line(log_path, text)
+            yield f"data: {json.dumps({'log': text})}\n\n"
         rc = 0
-        async for payload in _sse_subprocess_iter(build_cmd(primary_device), cwd=str(irodori)):
+        async for payload in _sse_subprocess_iter(build_cmd(primary_device), cwd=str(irodori), log_path=log_path):
             event = json.loads(payload)
             if "rc" in event:
                 rc = int(event["rc"])
             else:
                 yield f"data: {json.dumps(event)}\n\n"
         if rc != 0 and primary_device != "cpu":
-            yield f"data: {json.dumps({'log': f'[WARN] Manifest preparation failed on {primary_device}; retrying on cpu.'})}\n\n"
-            async for payload in _sse_subprocess_iter(build_cmd("cpu"), cwd=str(irodori)):
+            text = f"[WARN] Manifest preparation failed on {primary_device}; retrying on cpu."
+            _append_log_line(log_path, text)
+            yield f"data: {json.dumps({'log': text})}\n\n"
+            async for payload in _sse_subprocess_iter(build_cmd("cpu"), cwd=str(irodori), log_path=log_path):
                 event = json.loads(payload)
                 if "rc" in event:
                     rc = int(event["rc"])
                 else:
                     yield f"data: {json.dumps(event)}\n\n"
         if rc == 0 and (not manifest_path.exists() or manifest_path.stat().st_size <= 0):
-            yield f"data: {json.dumps({'log': '[ERROR] Manifest missing or empty after preparation.'})}\n\n"
+            text = "[ERROR] Manifest missing or empty after preparation."
+            _append_log_line(log_path, text)
+            yield f"data: {json.dumps({'log': text})}\n\n"
             rc = 1
         yield f"data: {json.dumps({'done': True, 'rc': rc})}\n\n"
 
@@ -1611,6 +1802,7 @@ async def train(req: TrainRequest):
     config = Path(req.config_path) if req.config_path.strip() else (irodori / "configs" / "train_500m_v3_speaker_inversion.yaml")
     requested_device = _normalise_device(req.device)
     train_device = await _detect_device(uv, irodori) if requested_device == "auto" else requested_device
+    log_path = _log_path("train", req.job_name)
 
     cmd = _uv_run(uv, irodori, "train.py") + [
         "--config", str(config),
@@ -1634,8 +1826,10 @@ async def train(req: TrainRequest):
         cmd += ["--speaker-inversion-init-embedding", req.init_embedding.strip()]
 
     async def stream():
-        yield f"data: {json.dumps({'log': f'[INFO] Device: {train_device}'})}\n\n"
-        async for payload in _sse_subprocess(cmd, cwd=str(irodori)):
+        for text in (f"[INFO] Log file: {log_path}", f"[INFO] Device: {train_device}"):
+            _append_log_line(log_path, text)
+            yield f"data: {json.dumps({'log': text})}\n\n"
+        async for payload in _sse_subprocess(cmd, cwd=str(irodori), log_path=log_path):
             yield payload
 
     return StreamingResponse(stream(), media_type="text/event-stream")
@@ -1661,19 +1855,35 @@ async def generate(req: GenerateRequest):
     output_wav = OUTPUTS_DIR / f"{req.output_name}.wav"
     saved_checkpoint = _settings.get("checkpoint_path", "").strip()
     checkpoint = Path(req.checkpoint_path or saved_checkpoint) if (req.checkpoint_path or saved_checkpoint).strip() else (irodori / "Irodori-TTS-500M-v3" / "model.safetensors")
+    log_path = _log_path("generate", req.output_name)
+    request_path = log_path.with_suffix(".request.json")
+    request_path.write_text(
+        json.dumps({
+            "checkpoint": str(checkpoint),
+            "embedding_path": req.embedding_path,
+            "text": req.text,
+            "output_wav": str(output_wav),
+            "num_steps": req.num_steps,
+            "seed": req.seed,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
-    cmd = _uv_run(uv, irodori, "infer.py") + [
-        "--checkpoint", str(checkpoint),
-        "--ref-embed", req.embedding_path,
-        "--text", req.text,
-        "--output-wav", str(output_wav),
-        "--num-steps", str(req.num_steps),
+    cmd = _uv_python(uv) + [
+        str(WEBUI_DIR / "infer_worker.py"),
+        str(irodori / "infer.py"),
+        str(request_path),
     ]
-    if req.seed >= 0:
-        cmd += ["--seed", str(req.seed)]
 
     async def stream():
-        async for chunk in _sse_subprocess(cmd, cwd=str(irodori)):
+        for text in (
+            f"[INFO] Log file: {log_path}",
+            f"[INFO] Request file: {request_path}",
+            f"[INFO] Text: {req.text}",
+        ):
+            _append_log_line(log_path, text)
+            yield f"data: {json.dumps({'log': text})}\n\n"
+        async for chunk in _sse_subprocess(cmd, cwd=str(irodori), log_path=log_path):
             yield chunk
         if output_wav.exists():
             yield f"data: {json.dumps({'audio_url': f'/audio/output/{output_wav.name}'})}\n\n"
@@ -1709,35 +1919,53 @@ def _rc_hint(rc: int) -> str:
     return f"Exit code {rc} ({hex_str})"
 
 
-async def _sse_subprocess_iter(cmd: list[str], cwd: str | None = None):
+async def _sse_subprocess_iter(cmd: list[str], cwd: str | None = None, log_path: Path | None = None):
+    log_f = None
+    if log_path:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_f = log_path.open("a", encoding="utf-8")
+
+    def write_log(text: str) -> None:
+        if log_f:
+            log_f.write(text + "\n")
+            log_f.flush()
+
     display_cmd = " ".join(
         f'"{p}"' if " " in str(p) else str(p) for p in cmd
     )
+    write_log("$ " + display_cmd)
     yield json.dumps({"log": "$ " + display_cmd})
 
-    env = _subprocess_env(Path(cwd) if cwd else IRODORI_ROOT)
+    try:
+        env = _subprocess_env(Path(cwd) if cwd else IRODORI_ROOT)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        env=env,
-    )
-    assert proc.stdout is not None
-    async for line in proc.stdout:
-        text = line.decode("utf-8", errors="replace").rstrip()
-        yield json.dumps({"log": text})
-    rc = await proc.wait()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        assert proc.stdout is not None
+        async for line in proc.stdout:
+            text = line.decode("utf-8", errors="replace").rstrip()
+            write_log(text)
+            yield json.dumps({"log": text})
+        rc = await proc.wait()
 
-    hint = _rc_hint(rc)
-    if hint:
-        yield json.dumps({"log": hint})
-    yield json.dumps({"rc": rc})
+        hint = _rc_hint(rc)
+        if hint:
+            write_log(hint)
+            yield json.dumps({"log": hint})
+        write_log(f"[Done rc={rc}]")
+        yield json.dumps({"rc": rc})
+    finally:
+        if log_f:
+            log_f.close()
 
 
-async def _sse_subprocess(cmd: list[str], cwd: str | None = None):
-    async for payload in _sse_subprocess_iter(cmd, cwd=cwd):
+async def _sse_subprocess(cmd: list[str], cwd: str | None = None, log_path: Path | None = None):
+    async for payload in _sse_subprocess_iter(cmd, cwd=cwd, log_path=log_path):
         event = json.loads(payload)
         if "rc" in event:
             yield f"data: {json.dumps({'done': True, 'rc': event['rc']})}\n\n"
