@@ -14,6 +14,7 @@
   </div>
 </header>
 
+<div id="status-bar" style="display:none;padding:4px 16px;font-size:12px;background:var(--card);border-bottom:1px solid var(--border)"></div>
 <nav id="tab-nav">
   <button class="tab active" data-tab="data">データ準備</button>
   <button class="tab" data-tab="segments">セグメント</button>
@@ -33,22 +34,59 @@
         <div class="drop-label">WAV / MP3 をドロップ<br>またはクリックして選択</div>
         <input type="file" id="file-input" multiple accept=".wav,.mp3" hidden>
       </div>
+      <div class="ctrl-row">
+        <button id="btn-clear-data-prep" class="danger">クリア</button>
+        <button id="btn-load-project-state">プロジェクトを読み込む</button>
+      </div>
       <div id="file-list" class="item-list"></div>
+      <div class="toolbar" style="margin-top:12px;margin-bottom:4px">
+        <h3>Projects</h3>
+        <button id="btn-refresh-data-datasets" class="icon-btn" title="Refresh">↻</button>
+      </div>
+      <input type="file" id="dataset-folder-input" webkitdirectory directory multiple hidden>
+      <div id="dataset-project-list" class="dataset-list">
+        <span class="dim" style="font-size:12px">No projects</span>
+      </div>
     </div>
 
     <!-- Right: Waveform + controls -->
     <div class="panel" style="flex:2" id="waveform-panel">
       <h3>波形 <span id="waveform-filename" class="dim"></span></h3>
-      <div id="waveform-container">
-        <div id="waveform"></div>
-        <div id="waveform-time" class="dim">ファイルを選択してください</div>
+
+      <!-- Waveform wrapper (relative, holds overlays) -->
+      <div id="waveform-wrap">
+        <div id="waveform-inner"></div>
+        <!-- interaction capture (pointer-events on) -->
+        <div id="wf-interact" class="wf-layer"></div>
+        <!-- marker lines (pointer-events off) -->
+        <div id="wf-markers" class="wf-layer"></div>
+        <!-- selection box (pointer-events off) -->
+        <div id="wf-sel" class="wf-layer hidden"></div>
+      </div>
+      <div id="waveform-time" class="dim">ファイルを選択してください</div>
+
+      <!-- File info (shown after load) -->
+      <div id="file-info-bar" class="hidden">
+        <span id="file-info-text" class="dim"></span>
+      </div>
+
+      <!-- Selection toolbar (shown when range selected) -->
+      <div id="sel-toolbar" class="ctrl-row">
+        <span id="sel-info" class="dim" style="font-size:11px"></span>
+        <button id="btn-play-sel">選択範囲を再生</button>
+        <button id="btn-extract-sel">選択範囲をセグメントに追加</button>
+        <button id="btn-markers-at-sel">端にマーカーを追加</button>
+        <button id="btn-delete-sel" class="danger">選択範囲を削除</button>
+        <button id="btn-clear-sel" class="icon-btn" title="選択解除">✕</button>
       </div>
 
       <div id="waveform-controls" class="hidden">
         <div class="ctrl-row">
           <button id="btn-play-pause" class="icon-btn">▶</button>
-          <span id="time-display" class="dim">0.0 / 0.0 s</span>
+          <span id="time-display" class="dim" style="min-width:120px">0.0 / 0.0 s</span>
           <button id="btn-loop" class="icon-btn" title="ループ再生">↩</button>
+          <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="0.8" title="音量" style="width:80px">
+          <span class="dim" style="font-size:13px">🔊</span>
         </div>
 
         <div class="ctrl-section">
@@ -59,23 +97,23 @@
         </div>
 
         <div class="ctrl-section">
-          <strong>無音で自動分割</strong>
+          <strong>マーカー（分割地点）</strong>
           <div class="ctrl-row wrap">
-            <label>最小無音長 <input type="number" id="min-silence" value="700" min="100" max="5000" step="100"> ms</label>
-            <label>無音閾値 <input type="number" id="silence-thresh" value="-40" min="-80" max="-5" step="1"> dB</label>
-            <label>前後余白 <input type="number" id="keep-silence" value="200" min="0" max="1000" step="50"> ms</label>
-            <button id="btn-split-silence" class="primary">自動分割実行</button>
-          </div>
-        </div>
-
-        <div class="ctrl-section">
-          <strong>手動分割</strong>
-          <div class="ctrl-row wrap">
+            <label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)">
+              最小無音長 <input type="number" id="min-silence" value="700" min="100" max="5000" step="100" style="width:70px"> ms
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)">
+              無音閾値 <input type="number" id="silence-thresh" value="-40" min="-80" max="-5" step="1" style="width:60px"> dB
+            </label>
+            <button id="btn-auto-markers">自動マーカー検出</button>
+            <span style="color:var(--dim);font-size:11px">|</span>
             <button id="btn-add-marker">現在位置にマーカー追加</button>
-            <button id="btn-clear-markers">マーカーをクリア</button>
-            <button id="btn-apply-split" class="primary">マーカーで分割実行</button>
+            <button id="btn-clear-markers">全マーカーをクリア</button>
           </div>
-          <div id="markers-list" class="markers-list"></div>
+          <div id="markers-list" class="markers-list" style="margin-top:4px"></div>
+          <div class="ctrl-row" style="margin-top:6px">
+            <button id="btn-apply-split" class="primary">マーカーで分割してセグメント作成</button>
+          </div>
         </div>
       </div>
     </div>
@@ -99,23 +137,38 @@
 <div id="tab-train" class="tab-content">
   <div class="train-sections">
 
+    <!-- Datasets (Projects) panel -->
+    <section class="card">
+      <div class="toolbar" style="margin-bottom:8px">
+        <h3>データセット (Projects)</h3>
+        <button id="btn-refresh-datasets" class="icon-btn" title="更新">⟳</button>
+      </div>
+      <div id="dataset-list" class="dataset-list">
+        <span class="dim" style="font-size:12px">データセットなし</span>
+      </div>
+    </section>
+
     <section class="card">
       <h3><span class="step-badge">1</span> データセット構築</h3>
       <div class="form-grid">
-        <label>ジョブ名 <input type="text" id="job-name" value="my_speaker"></label>
-        <label>スピーカー名 <input type="text" id="speaker-name" placeholder="空欄でジョブ名と同じ"></label>
+        <label>キャラクター名（speaker） <input type="text" id="speaker-name" placeholder="例: 桜十字エルデリーゼ"></label>
+        <label>出力先データセット名 <input type="text" id="job-name" placeholder="空欄でキャラクター名と同じ"></label>
+      </div>
+      <div id="dataset-dirty-msg" class="hidden" style="font-size:12px;color:var(--warning);margin:4px 0">
+        ⚠ セグメントが変更されています。反映するには再度「データセット構築」を実行してください。
       </div>
       <div class="action-row">
         <button id="btn-build-dataset" class="primary">データセット構築</button>
         <span id="build-result" class="dim"></span>
       </div>
+      <div id="build-paths" class="hidden" style="font-size:11px;color:var(--dim);margin-top:6px;line-height:1.8"></div>
     </section>
 
     <section class="card">
       <h3><span class="step-badge">2</span> Manifest 準備（Latent 計算）</h3>
       <div class="form-grid">
         <label>Device
-          <select id="prep-device"><option>cuda</option><option>cpu</option></select>
+          <select id="prep-device"><option>auto</option><option>cuda</option><option>xpu</option><option>mps</option><option>cpu</option></select>
         </label>
         <label>正規化 dB <input type="text" id="normalize-db" value="-16.0"></label>
         <label>最大秒数 <input type="number" id="max-seconds" value="0" step="0.5" min="0"> <span class="dim">(0=無制限)</span></label>
@@ -129,7 +182,7 @@
       <h3><span class="step-badge">3</span> 学習</h3>
       <div class="form-grid">
         <label>Device
-          <select id="train-device"><option>cuda</option><option>cpu</option></select>
+          <select id="train-device"><option>auto</option><option>cuda</option><option>xpu</option><option>mps</option><option>cpu</option></select>
         </label>
         <label>Precision
           <select id="precision"><option>bf16</option><option>fp32</option></select>
@@ -204,10 +257,13 @@
     <h3>設定</h3>
     <div class="form-grid">
       <label style="grid-column:span 2">Irodori-TTS ルートパス
-        <input type="text" id="set-irodori-root">
+        <div class="input-row">
+          <input type="text" id="set-irodori-root" placeholder="例: C:\usr\sd\Irodori-TTS-v3">
+          <button type="button" id="btn-open-root-modal">指定</button>
+        </div>
       </label>
-      <label style="grid-column:span 2">Python 実行ファイル
-        <input type="text" id="set-python-exe" placeholder="空欄でサーバーの Python を使用">
+      <label style="grid-column:span 2">uv 実行ファイル
+        <input type="text" id="set-uv-exe" placeholder="空欄で自動検出 (PATH / ~/.local/bin/uv)">
       </label>
       <label style="grid-column:span 2">ベースチェックポイント
         <input type="text" id="set-checkpoint" placeholder="空欄でデフォルト">
@@ -223,6 +279,21 @@
 <!-- Mini player (shared) -->
 <div id="mini-player" class="hidden">
   <audio id="mini-audio" controls></audio>
+</div>
+
+<div id="irodori-root-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="irodori-root-title">
+  <div class="modal-card">
+    <h3 id="irodori-root-title">Irodori-TTS v3 ルートディレクトリ</h3>
+    <p class="dim">学習・生成に使うIrodori-TTS-v3本体のフォルダを指定してください。</p>
+    <label>Irodori-TTS ルートパス
+      <input type="text" id="modal-irodori-root" placeholder="例: C:\usr\sd\Irodori-TTS-v3">
+    </label>
+    <div class="action-row">
+      <button type="button" id="btn-save-root-modal" class="primary">保存</button>
+      <button type="button" id="btn-close-root-modal">閉じる</button>
+      <span id="root-modal-status" class="dim"></span>
+    </div>
+  </div>
 </div>
 
 <script src="/static/wavesurfer.min.js"></script>

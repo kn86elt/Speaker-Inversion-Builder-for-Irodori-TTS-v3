@@ -1,25 +1,65 @@
 // Speaker Inversion Builder – frontend
-// WaveSurfer is loaded as a global via wavesurfer.min.js
+// WaveSurfer loaded globally via wavesurfer.min.js (UMD)
 
-// ─── State ───────────────────────────────────────────────────────────────────
+// ─── Global state ────────────────────────────────────────────────────────────
 var state = { files: {}, segments: [] };
 var currentFileId = null;
 var wavesurfer = null;
-var splitMarkers = [];
+var splitMarkers = [];   // seconds within current file
 var loopEnabled = false;
-var settings = {
-  irodori_root: 'C:/usr/sd/Irodori-TTS-v3',
-  python_exe: '',
-  checkpoint_path: '',
-};
+var selState = { active: false, startT: 0, endT: 0, startX: 0, hasDrag: false };
+var settings = { irodori_root: '', uv_exe: '', checkpoint_path: '' };
+var suggestedIrodoriRoot = '';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
-  bindUI();          // bind all handlers first – never block UI
+  bindUI();
   loadSettings();
   refreshState();
   refreshRuns();
+  refreshDatasets();
+  refreshDataDatasetProjects();
 });
+
+// ─── Spinner helper ───────────────────────────────────────────────────────────
+function withSpinner(btn, fn) {
+  var orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  var p;
+  try {
+    p = fn();
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = orig;
+    setStatus('Error: ' + e.message, true);
+    return Promise.reject(e);
+  }
+  if (p && typeof p.finally === 'function') {
+    return p.catch(function (e) {
+      setStatus('Error: ' + e.message, true);
+    }).finally(function () {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    });
+  }
+  btn.disabled = false;
+  btn.innerHTML = orig;
+  return Promise.resolve(p);
+}
+
+// ─── Global status bar ────────────────────────────────────────────────────────
+function setStatus(msg, isError) {
+  var bar = document.getElementById('status-bar');
+  if (!bar) return;
+  bar.textContent = msg;
+  bar.style.color = isError ? 'var(--danger)' : 'var(--success)';
+  bar.style.display = msg ? 'block' : 'none';
+  if (!isError && msg) {
+    clearTimeout(bar._t);
+    bar._t = setTimeout(function () { bar.style.display = 'none'; }, 4000);
+  }
+}
 
 // ─── Tab switching ────────────────────────────────────────────────────────────
 function bindUI() {
@@ -33,36 +73,60 @@ function bindUI() {
     });
   });
 
-  // Drop zone
+  // Upload
   var dropArea = document.getElementById('drop-area');
   var fileInput = document.getElementById('file-input');
+  var datasetFolderInput = document.getElementById('dataset-folder-input');
   dropArea.addEventListener('click', function () { fileInput.click(); });
   dropArea.addEventListener('dragover', function (e) { e.preventDefault(); dropArea.classList.add('dragover'); });
   dropArea.addEventListener('dragleave', function () { dropArea.classList.remove('dragover'); });
-  dropArea.addEventListener('drop', function (e) {
-    e.preventDefault();
-    dropArea.classList.remove('dragover');
-    handleFileUpload(e.dataTransfer.files);
-  });
+  dropArea.addEventListener('drop', function (e) { e.preventDefault(); dropArea.classList.remove('dragover'); handleFileUpload(e.dataTransfer.files); });
   fileInput.addEventListener('change', function (e) { handleFileUpload(e.target.files); });
+  document.getElementById('btn-load-project-state').addEventListener('click', function () { datasetFolderInput.click(); });
+  datasetFolderInput.addEventListener('change', function (e) { importDatasetFolder(e.target.files); });
+  document.getElementById('btn-clear-data-prep').addEventListener('click', clearDataPrep);
 
-  // Waveform controls
+  // Playback controls
   document.getElementById('btn-play-pause').addEventListener('click', function () { if (wavesurfer) wavesurfer.playPause(); });
   document.getElementById('btn-loop').addEventListener('click', function () {
     loopEnabled = !loopEnabled;
     document.getElementById('btn-loop').style.color = loopEnabled ? 'var(--accent)' : '';
   });
+  document.getElementById('volume-slider').addEventListener('input', function (e) {
+    if (wavesurfer) wavesurfer.setVolume(parseFloat(e.target.value));
+  });
+
+  // Waveform interaction overlay
+  bindWaveformInteraction();
+
+  // Selection toolbar
+  document.getElementById('btn-play-sel').addEventListener('click', playSelection);
+  document.getElementById('btn-extract-sel').addEventListener('click', extractSelection);
+  document.getElementById('btn-markers-at-sel').addEventListener('click', markersAtSelection);
+  document.getElementById('btn-delete-sel').addEventListener('click', deleteSelection);
+  document.getElementById('btn-clear-sel').addEventListener('click', clearSelection);
+
+  // Segment controls
   document.getElementById('btn-add-whole').addEventListener('click', addWholeFileAsSegment);
-  document.getElementById('btn-split-silence').addEventListener('click', splitBySilence);
+  document.getElementById('btn-auto-markers').addEventListener('click', function () {
+    withSpinner(this, detectAutoMarkers);
+  });
   document.getElementById('btn-add-marker').addEventListener('click', addMarkerAtCurrent);
   document.getElementById('btn-clear-markers').addEventListener('click', clearMarkers);
-  document.getElementById('btn-apply-split').addEventListener('click', applyManualSplit);
+  document.getElementById('btn-apply-split').addEventListener('click', function () {
+    withSpinner(this, applyManualSplit);
+  });
 
   // Segments tab
   document.getElementById('btn-transcribe-all').addEventListener('click', transcribeAll);
 
   // Training tab
-  document.getElementById('btn-build-dataset').addEventListener('click', buildDataset);
+  document.getElementById('btn-build-dataset').addEventListener('click', function () {
+    withSpinner(this, function () { return buildDataset(false); });
+  });
+  document.getElementById('btn-refresh-datasets').addEventListener('click', refreshDatasets);
+  document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDatasets);
+  document.getElementById('btn-refresh-data-datasets').addEventListener('click', refreshDataDatasetProjects);
   document.getElementById('btn-prepare-manifest').addEventListener('click', prepareManifest);
   document.getElementById('btn-train').addEventListener('click', startTraining);
 
@@ -72,36 +136,255 @@ function bindUI() {
 
   // Settings
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
+  document.getElementById('btn-open-root-modal').addEventListener('click', function () { showRootModal(false); });
+  document.getElementById('btn-save-root-modal').addEventListener('click', saveRootModal);
+  document.getElementById('btn-close-root-modal').addEventListener('click', function () {
+    if (!settings.irodori_root) return;
+    hideRootModal();
+  });
+  updateSelectionToolbar();
+}
+
+// ─── Waveform interaction overlay ─────────────────────────────────────────────
+function bindWaveformInteraction() {
+  var overlay = document.getElementById('wf-interact');
+  var selBox = document.getElementById('wf-sel');
+  var DRAG_PX = 6;
+
+  overlay.addEventListener('mousedown', function (e) {
+    if (!wavesurfer) return;
+    selState.active = true;
+    selState.hasDrag = false;
+    selState.startX = e.clientX;
+    selState.startT = xToTime(e, overlay);
+    selState.endT = selState.startT;
+  });
+
+  overlay.addEventListener('mousemove', function (e) {
+    if (!selState.active || !wavesurfer) return;
+    if (Math.abs(e.clientX - selState.startX) > DRAG_PX) {
+      selState.hasDrag = true;
+      selState.endT = clampTime(xToTime(e, overlay));
+      updateSelBox(selBox);
+    }
+  });
+
+  overlay.addEventListener('mouseup', function (e) {
+    if (!wavesurfer) { selState.active = false; return; }
+    var finalT = clampTime(xToTime(e, overlay));
+    if (Math.abs(finalT - selState.startT) > 0.001) {
+      selState.hasDrag = true;
+      selState.endT = finalT;
+      updateSelBox(selBox);
+    }
+    if (!selState.hasDrag) {
+      // plain click → seek
+      wavesurfer.setTime(clampTime(xToTime(e, overlay)));
+      clearSelection();
+    } else {
+      selState.endT = finalT;
+      updateSelBox(selBox);
+      showSelToolbar();
+    }
+    selState.active = false;
+  });
+
+  // Cancel drag if mouse leaves window
+  document.addEventListener('mouseup', function () { selState.active = false; });
+}
+
+function xToTime(e, el) {
+  var rect = el.getBoundingClientRect();
+  var ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  return ratio * (wavesurfer ? wavesurfer.getDuration() : 0);
+}
+function clampTime(t) {
+  return Math.max(0, Math.min(wavesurfer ? wavesurfer.getDuration() : 0, t));
+}
+function selStart() { return Math.min(selState.startT, selState.endT); }
+function selEnd()   { return Math.max(selState.startT, selState.endT); }
+
+function updateSelBox(box) {
+  var dur = wavesurfer ? wavesurfer.getDuration() : 1;
+  var s = selStart() / dur * 100;
+  var w = (selEnd() - selStart()) / dur * 100;
+  box.style.left = s + '%';
+  box.style.width = w + '%';
+  box.classList.remove('hidden');
+}
+
+function showSelToolbar() {
+  updateSelectionToolbar();
+  return;
+  var tb = document.getElementById('sel-toolbar');
+  var info = document.getElementById('sel-info');
+  var dur = selEnd() - selStart();
+  info.textContent = selStart().toFixed(2) + 's – ' + selEnd().toFixed(2) + 's (' + dur.toFixed(2) + 's)';
+  tb.classList.remove('hidden');
+}
+
+function updateSelectionToolbar() {
+  var info = document.getElementById('sel-info');
+  var hasSelection = !!(wavesurfer && selState.hasDrag && selEnd() > selStart());
+  ['btn-play-sel', 'btn-extract-sel', 'btn-markers-at-sel', 'btn-delete-sel', 'btn-clear-sel'].forEach(function (id) {
+    var btn = document.getElementById(id);
+    if (btn) btn.disabled = !hasSelection;
+  });
+  if (!info) return;
+  if (!hasSelection) {
+    info.textContent = 'No range selected';
+    return;
+  }
+  var dur = selEnd() - selStart();
+  info.textContent = selStart().toFixed(2) + 's - ' + selEnd().toFixed(2) + 's (' + dur.toFixed(2) + 's)';
+}
+
+function clearSelection() {
+  selState.hasDrag = false;
+  document.getElementById('wf-sel').classList.add('hidden');
+  document.getElementById('sel-toolbar').classList.remove('hidden');
+  updateSelectionToolbar();
+}
+
+function playSelection() {
+  if (!wavesurfer || !selState.hasDrag) return;
+  var s = selStart(), e = selEnd();
+  wavesurfer.setTime(s);
+  wavesurfer.play();
+  var stopFn = function (t) { if (t >= e) { wavesurfer.pause(); wavesurfer.un('timeupdate', stopFn); } };
+  wavesurfer.on('timeupdate', stopFn);
+}
+
+function extractSelection() {
+  if (!currentFileId || !selState.hasDrag) return;
+  var btn = document.getElementById('btn-extract-sel');
+  withSpinner(btn, function () {
+    return api('/api/file/' + encodeURIComponent(currentFileId) + '/extract_range', 'POST', { start: selStart(), end: selEnd() })
+      .then(function () { clearSelection(); refreshState(); });
+  });
+}
+
+function deleteSelection() {
+  if (!currentFileId || !selState.hasDrag) return;
+  if (!confirm('選択範囲を削除します。続行しますか？')) return;
+  var fileId = currentFileId;
+  var btn = document.getElementById('btn-delete-sel');
+  withSpinner(btn, function () {
+    return api('/api/file/' + encodeURIComponent(fileId) + '/delete_range', 'POST', { start: selStart(), end: selEnd() })
+      .then(function () {
+        clearMarkers();
+        clearSelection();
+        return refreshStatePromise();
+      })
+      .then(function () {
+        selectFile(fileId);
+        markDatasetDirty();
+      });
+  });
+}
+
+function markersAtSelection() {
+  if (!selState.hasDrag) return;
+  [selStart(), selEnd()].forEach(function (t) {
+    if (splitMarkers.indexOf(t) === -1) splitMarkers.push(t);
+  });
+  splitMarkers.sort(function (a, b) { return a - b; });
+  renderMarkers();
+  renderMarkerOverlays();
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function loadSettings() {
   api('/api/settings').then(function (data) {
-    settings.irodori_root = data.irodori_root || settings.irodori_root;
-    settings.python_exe = '';
-    settings.checkpoint_path = data.default_checkpoint || '';
+    suggestedIrodoriRoot = data.suggested_irodori_root || '';
+    settings.irodori_root = data.irodori_root || '';
+    settings.uv_exe = data.uv_exe || '';
+    settings.checkpoint_path = data.checkpoint_path || data.default_checkpoint || '';
     document.getElementById('set-irodori-root').value = settings.irodori_root;
-    document.getElementById('set-python-exe').value = '';
+    document.getElementById('set-irodori-root').placeholder = suggestedIrodoriRoot || 'C:/path/to/Irodori-TTS-v3';
+    document.getElementById('set-uv-exe').value = settings.uv_exe;
     document.getElementById('set-checkpoint').value = settings.checkpoint_path;
+    if (!settings.irodori_root) showRootModal(true);
   }).catch(function () {});
 }
-
 function saveSettings() {
-  settings.irodori_root = document.getElementById('set-irodori-root').value.trim();
-  settings.python_exe = document.getElementById('set-python-exe').value.trim();
-  settings.checkpoint_path = document.getElementById('set-checkpoint').value.trim();
   var st = document.getElementById('settings-status');
-  st.textContent = 'Saved';
-  setTimeout(function () { st.textContent = ''; }, 2000);
+  var payload = {
+    irodori_root: document.getElementById('set-irodori-root').value.trim(),
+    uv_exe: document.getElementById('set-uv-exe').value.trim(),
+    checkpoint_path: document.getElementById('set-checkpoint').value.trim(),
+  };
+  st.textContent = 'Saving...';
+  st.style.color = 'var(--dim)';
+  return api('/api/settings', 'POST', payload).then(function (res) {
+    settings.irodori_root = res.irodori_root || payload.irodori_root;
+    settings.uv_exe = res.uv_exe || payload.uv_exe;
+    settings.checkpoint_path = res.checkpoint_path || payload.checkpoint_path;
+    document.getElementById('set-irodori-root').value = settings.irodori_root;
+    document.getElementById('set-uv-exe').value = settings.uv_exe;
+    document.getElementById('set-checkpoint').value = settings.checkpoint_path;
+    st.textContent = 'Saved';
+    st.style.color = 'var(--success)';
+    setTimeout(function () { st.textContent = ''; }, 2000);
+    return res;
+  }).catch(function (e) {
+    st.textContent = 'Error: ' + e.message;
+    st.style.color = 'var(--danger)';
+    throw e;
+  });
 }
 
-// ─── State refresh ─────────────────────────────────────────────────────────────
+function showRootModal(required) {
+  var modal = document.getElementById('irodori-root-modal');
+  var input = document.getElementById('modal-irodori-root');
+  var status = document.getElementById('root-modal-status');
+  input.value = settings.irodori_root || document.getElementById('set-irodori-root').value.trim() || '';
+  input.placeholder = suggestedIrodoriRoot || 'C:/path/to/Irodori-TTS-v3';
+  status.textContent = required ? '初回設定が必要です' : '';
+  document.getElementById('btn-close-root-modal').disabled = required && !settings.irodori_root;
+  modal.classList.remove('hidden');
+  setTimeout(function () { input.focus(); }, 0);
+}
+
+function hideRootModal() {
+  document.getElementById('irodori-root-modal').classList.add('hidden');
+}
+
+function saveRootModal() {
+  var root = document.getElementById('modal-irodori-root').value.trim();
+  var status = document.getElementById('root-modal-status');
+  if (!root) {
+    status.textContent = 'パスを入力してください';
+    status.style.color = 'var(--danger)';
+    return;
+  }
+  document.getElementById('set-irodori-root').value = root;
+  status.textContent = 'Saving...';
+  status.style.color = 'var(--dim)';
+  saveSettings().then(function () {
+    status.textContent = 'Saved';
+    status.style.color = 'var(--success)';
+    hideRootModal();
+  }).catch(function (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = 'var(--danger)';
+  });
+}
+
+function ensureIrodoriRoot() {
+  if (settings.irodori_root) return true;
+  showRootModal(true);
+  setStatus('Irodori-TTS root path is required', true);
+  return false;
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
 function refreshState() {
   api('/api/state').then(function (data) {
     state = data;
     renderFileList();
     renderSegmentList();
-  }).catch(function (e) { console.error('refreshState error', e); });
+  }).catch(function (e) { console.error('refreshState', e); });
 }
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
@@ -109,14 +392,63 @@ function handleFileUpload(fileList) {
   if (!fileList || !fileList.length) return;
   var form = new FormData();
   for (var i = 0; i < fileList.length; i++) form.append('files', fileList[i]);
+  var drop = document.getElementById('drop-area');
+  drop.innerHTML = '<span class="spinner"></span>';
   api('/api/upload', 'POST', form).then(function () {
     refreshState();
   }).catch(function (e) {
     alert('Upload error: ' + e.message);
+  }).finally(function () {
+    drop.innerHTML = '<div class="drop-label">WAV / MP3 をドロップ<br>またはクリックして選択</div><input type="file" id="file-input" multiple accept=".wav,.mp3" hidden>';
+    document.getElementById('file-input').addEventListener('change', function (e) { handleFileUpload(e.target.files); });
   });
 }
 
-// ─── File list rendering ──────────────────────────────────────────────────────
+// ─── File list ────────────────────────────────────────────────────────────────
+function importDatasetFolder(fileList) {
+  if (!fileList || !fileList.length) return;
+  if (!confirm('現在のデータ準備状態をクリアして、選択したプロジェクトを読み込みます。続行しますか？')) return;
+  var form = new FormData();
+  for (var i = 0; i < fileList.length; i++) {
+    var file = fileList[i];
+    form.append('files', file, file.webkitRelativePath || file.name);
+  }
+  var btn = document.getElementById('btn-load-project-state');
+  withSpinner(btn, function () {
+    return api('/api/import_dataset_folder', 'POST', form).then(function (res) {
+      document.getElementById('job-name').value = res.name || '';
+      document.getElementById('speaker-name').value = res.speaker || '';
+      return refreshStatePromise().then(function () {
+        markDatasetDirty();
+        if (res.first_file_id) selectFile(res.first_file_id);
+        setStatus('Loaded dataset folder: ' + (res.name || '') + ' (' + res.segment_count + ' segments)', false);
+      });
+    });
+  }).finally(function () {
+    document.getElementById('dataset-folder-input').value = '';
+  });
+}
+
+function clearDataPrep() {
+  if (!confirm('現在のデータ準備状態をクリアします。続行しますか？')) return;
+  api('/api/clear_data_prep', 'POST', {}).then(function () {
+    currentFileId = null;
+    splitMarkers = [];
+    clearSelection();
+    if (wavesurfer) { wavesurfer.destroy(); wavesurfer = null; }
+    document.getElementById('waveform-filename').textContent = '';
+    document.getElementById('waveform-time').textContent = 'ファイルを選択してください';
+    document.getElementById('waveform-controls').classList.add('hidden');
+    document.getElementById('file-info-bar').classList.add('hidden');
+    return refreshStatePromise();
+  }).then(function () {
+    clearDatasetDirty();
+    setStatus('Data preparation cleared', false);
+  }).catch(function (e) {
+    setStatus('Clear error: ' + e.message, true);
+  });
+}
+
 function renderFileList() {
   var el = document.getElementById('file-list');
   el.innerHTML = '';
@@ -139,8 +471,7 @@ function renderFileList() {
       if (!e.target.classList.contains('del-btn')) selectFile(f.id);
     });
     div.querySelector('.del-btn').addEventListener('click', function (e) {
-      e.stopPropagation();
-      deleteFile(f.id);
+      e.stopPropagation(); deleteFile(f.id);
     });
     el.appendChild(div);
   });
@@ -150,17 +481,20 @@ function renderFileList() {
 function selectFile(fileId) {
   currentFileId = fileId;
   clearMarkers();
+  clearSelection();
   renderFileList();
 
   var f = state.files[fileId];
   document.getElementById('waveform-controls').classList.remove('hidden');
   document.getElementById('waveform-filename').textContent = f ? f.name : '';
   document.getElementById('waveform-time').textContent = 'Loading...';
+  document.getElementById('file-info-bar').classList.add('hidden');
 
   if (wavesurfer) { wavesurfer.destroy(); wavesurfer = null; }
 
   wavesurfer = WaveSurfer.create({
-    container: '#waveform',
+    container: '#waveform-inner',
+    interact: false,  // we handle all interaction via #wf-interact overlay
     waveColor: '#4a9eff',
     progressColor: '#1a6fc4',
     cursorColor: '#ffffff',
@@ -170,11 +504,21 @@ function selectFile(fileId) {
     normalize: true,
   });
 
+  wavesurfer.setVolume(parseFloat(document.getElementById('volume-slider').value));
+
+  wavesurfer.on('ready', function () {
+    var dur = wavesurfer.getDuration();
+    document.getElementById('waveform-time').textContent = '0.00 / ' + dur.toFixed(2) + ' s';
+    // Show file info
+    showFileInfo(fileId, f);
+    // Re-render markers after waveform geometry is settled
+    renderMarkers();
+    renderMarkerOverlays();
+  });
   wavesurfer.on('timeupdate', function (t) {
     var dur = wavesurfer.getDuration();
-    var txt = t.toFixed(2) + ' / ' + dur.toFixed(2) + ' s';
-    document.getElementById('time-display').textContent = txt;
-    document.getElementById('waveform-time').textContent = txt;
+    document.getElementById('time-display').textContent = t.toFixed(2) + ' / ' + dur.toFixed(2) + ' s';
+    document.getElementById('waveform-time').textContent = t.toFixed(2) + ' / ' + dur.toFixed(2) + ' s';
   });
   wavesurfer.on('play', function () { document.getElementById('btn-play-pause').textContent = '⏸'; });
   wavesurfer.on('pause', function () { document.getElementById('btn-play-pause').textContent = '▶'; });
@@ -187,18 +531,33 @@ function selectFile(fileId) {
     console.error('WaveSurfer error', e);
   });
 
-  wavesurfer.load('/audio/upload/' + fileId);
+  wavesurfer.load('/audio/upload/' + encodeURIComponent(fileId));
 }
 
+function showFileInfo(fileId, f) {
+  var bar = document.getElementById('file-info-bar');
+  var txt = document.getElementById('file-info-text');
+  var parts = [];
+  if (f && f.samplerate) parts.push(f.samplerate + ' Hz');
+  if (f && f.channels)   parts.push(f.channels === 1 ? 'Mono' : f.channels === 2 ? 'Stereo' : f.channels + 'ch');
+  if (f && f.subtype)    parts.push(f.subtype);
+  if (f && f.duration)   parts.push(f.duration.toFixed(2) + ' s');
+  txt.textContent = parts.join('  ·  ');
+  bar.classList.remove('hidden');
+}
+
+// ─── SR fix ───────────────────────────────────────────────────────────────────
 // ─── File operations ──────────────────────────────────────────────────────────
 function deleteFile(fileId) {
   if (!confirm('Delete this file and its segments?')) return;
-  api('/api/file/' + fileId, 'DELETE').then(function () {
+  api('/api/file/' + encodeURIComponent(fileId), 'DELETE').then(function () {
     if (currentFileId === fileId) {
       currentFileId = null;
       if (wavesurfer) { wavesurfer.destroy(); wavesurfer = null; }
       document.getElementById('waveform-controls').classList.add('hidden');
+      document.getElementById('file-info-bar').classList.add('hidden');
       document.getElementById('waveform-filename').textContent = '';
+      clearSelection();
     }
     refreshState();
   }).catch(function (e) { alert('Delete error: ' + e.message); });
@@ -206,34 +565,39 @@ function deleteFile(fileId) {
 
 function addWholeFileAsSegment() {
   if (!currentFileId) return;
-  api('/api/file/' + currentFileId + '/as_segment', 'POST').then(function () {
-    refreshState();
-  }).catch(function (e) { alert('Error: ' + e.message); });
-}
-
-// ─── Silence split ────────────────────────────────────────────────────────────
-function splitBySilence() {
-  if (!currentFileId) return;
-  var btn = document.getElementById('btn-split-silence');
-  btn.disabled = true;
-  btn.textContent = 'Processing...';
-  var params = {
-    min_silence_ms: parseInt(document.getElementById('min-silence').value, 10),
-    silence_thresh_db: parseFloat(document.getElementById('silence-thresh').value),
-    keep_silence_ms: parseInt(document.getElementById('keep-silence').value, 10),
-  };
-  api('/api/file/' + currentFileId + '/split_silence', 'POST', params).then(function (result) {
-    refreshState();
-    alert(result.segments.length + ' segments created');
-  }).catch(function (e) {
-    alert('Split error: ' + e.message);
-  }).finally(function () {
-    btn.disabled = false;
-    btn.textContent = 'Auto-split';
+  withSpinner(document.getElementById('btn-add-whole'), function () {
+    return api('/api/file/' + encodeURIComponent(currentFileId) + '/as_segment', 'POST').then(function () { refreshState(); });
   });
 }
 
-// ─── Manual split markers ─────────────────────────────────────────────────────
+// ─── Auto-markers ─────────────────────────────────────────────────────────────
+function detectAutoMarkers() {
+  if (!currentFileId) {
+    setStatus('Please select a file first', true);
+    return Promise.resolve();
+  }
+  var params = {
+    min_silence_ms: parseInt(document.getElementById('min-silence').value, 10),
+    silence_thresh_db: parseFloat(document.getElementById('silence-thresh').value),
+  };
+  return api('/api/file/' + encodeURIComponent(currentFileId) + '/auto_markers', 'POST', params)
+    .then(function (res) {
+      var added = 0;
+      (res.markers || []).forEach(function (t) {
+        if (splitMarkers.indexOf(t) === -1) { splitMarkers.push(t); added++; }
+      });
+      splitMarkers.sort(function (a, b) { return a - b; });
+      renderMarkers();
+      renderMarkerOverlays();
+      if (res.markers.length === 0) {
+        setStatus('No silence gaps detected. Try a lower threshold (e.g. -50 dB).', true);
+      } else {
+        setStatus('Added ' + added + ' marker(s). Total: ' + splitMarkers.length, false);
+      }
+    });
+}
+
+// ─── Marker management ────────────────────────────────────────────────────────
 function addMarkerAtCurrent() {
   if (!wavesurfer) return;
   var t = parseFloat(wavesurfer.getCurrentTime().toFixed(3));
@@ -241,58 +605,122 @@ function addMarkerAtCurrent() {
     splitMarkers.push(t);
     splitMarkers.sort(function (a, b) { return a - b; });
     renderMarkers();
+    renderMarkerOverlays();
   }
 }
 
 function clearMarkers() {
   splitMarkers = [];
   renderMarkers();
+  renderMarkerOverlays();
 }
 
+// Chip list below controls
 function renderMarkers() {
   var el = document.getElementById('markers-list');
   el.innerHTML = '';
+  if (wavesurfer) {
+    var startChip = document.createElement('div');
+    startChip.className = 'marker-chip virtual-marker';
+    startChip.title = 'Click to seek to the beginning';
+    startChip.textContent = '0.00s start';
+    startChip.addEventListener('click', function () {
+      if (wavesurfer) wavesurfer.setTime(0);
+    });
+    el.appendChild(startChip);
+  }
+  if (!splitMarkers.length) return;
   splitMarkers.forEach(function (t, i) {
     var chip = document.createElement('div');
     chip.className = 'marker-chip';
-    chip.innerHTML = t.toFixed(2) + 's <span class="remove-marker" data-i="' + i + '">×</span>';
+    chip.title = 'Click to seek / × to delete';
+    chip.innerHTML = t.toFixed(2) + 's <span class="remove-marker">×</span>';
+
+    // Click chip body → seek to marker position
+    chip.addEventListener('click', (function (time) {
+      return function (e) {
+        if (e.target.classList.contains('remove-marker')) return;
+        if (wavesurfer) wavesurfer.setTime(time);
+      };
+    })(t));
+
+    // Click × → delete marker
     chip.querySelector('.remove-marker').addEventListener('click', (function (idx) {
-      return function () { splitMarkers.splice(idx, 1); renderMarkers(); };
+      return function (e) {
+        e.stopPropagation();
+        splitMarkers.splice(idx, 1);
+        renderMarkers();
+        renderMarkerOverlays();
+      };
     })(i));
+
     el.appendChild(chip);
   });
 }
 
+// Visual marker lines on the waveform overlay
+function renderMarkerOverlays() {
+  var container = document.getElementById('wf-markers');
+  container.innerHTML = '';
+  if (!wavesurfer) return;
+  var dur = wavesurfer.getDuration();
+  if (!dur) return;
+  var startLine = document.createElement('div');
+  startLine.className = 'wf-marker-line virtual';
+  startLine.style.left = '0%';
+  var startLabel = document.createElement('div');
+  startLabel.className = 'wf-marker-label';
+  startLabel.textContent = '0.00';
+  startLine.appendChild(startLabel);
+  container.appendChild(startLine);
+  splitMarkers.forEach(function (t, i) {
+    var pct = (t / dur * 100).toFixed(3);
+    var line = document.createElement('div');
+    line.className = 'wf-marker-line';
+    line.style.left = pct + '%';
+    var label = document.createElement('div');
+    label.className = 'wf-marker-label';
+    label.textContent = t.toFixed(2);
+    line.appendChild(label);
+    container.appendChild(line);
+  });
+}
+
+// ─── Apply split ──────────────────────────────────────────────────────────────
 function applyManualSplit() {
   if (!currentFileId || !splitMarkers.length) {
     alert('Add markers first');
-    return;
+    return Promise.resolve();
   }
   var segs = state.segments.filter(function (s) { return s.file_id === currentFileId; });
   if (!segs.length) {
-    // Create whole-file segment first, then split
-    api('/api/file/' + currentFileId + '/as_segment', 'POST').then(function (res) {
-      refreshState();
-      return doSplit(res.segment.id);
-    }).catch(function (e) { alert('Error: ' + e.message); });
-    return;
+    return api('/api/file/' + encodeURIComponent(currentFileId) + '/as_segment', 'POST').then(function () {
+      return refreshStatePromise().then(function () {
+        var s = state.segments.find(function (s) { return s.file_id === currentFileId; });
+        if (!s) return;
+        return doSplit(s.id);
+      });
+    });
   }
-  doSplit(segs[0].id);
+  return doSplit(segs[0].id);
 }
 
 function doSplit(segId) {
-  api('/api/segment/' + segId + '/split', 'POST', { positions: splitMarkers }).then(function () {
+  return api('/api/segment/' + encodeURIComponent(segId) + '/split', 'POST', { positions: splitMarkers }).then(function () {
     clearMarkers();
     refreshState();
   }).catch(function (e) { alert('Split error: ' + e.message); });
 }
 
-// ─── Segment list rendering ───────────────────────────────────────────────────
+function refreshStatePromise() {
+  return api('/api/state').then(function (data) { state = data; renderFileList(); renderSegmentList(); });
+}
+
+// ─── Segment list ─────────────────────────────────────────────────────────────
 function renderSegmentList() {
   var el = document.getElementById('segment-list');
   document.getElementById('seg-count').textContent = state.segments.length;
   el.innerHTML = '';
-
   state.segments.forEach(function (seg) {
     var file = state.files[seg.file_id];
     var card = document.createElement('div');
@@ -317,130 +745,238 @@ function renderSegmentList() {
       clearTimeout(saveTimeout);
       saveTimeout = setTimeout(function () { saveSegText(seg.id, textarea); }, 800);
     });
-    textarea.addEventListener('blur', function () {
-      clearTimeout(saveTimeout);
-      saveSegText(seg.id, textarea);
-    });
+    textarea.addEventListener('blur', function () { clearTimeout(saveTimeout); saveSegText(seg.id, textarea); });
 
     card.querySelector('.seg-play').addEventListener('click', function () { playSegment(seg.id); });
-    card.querySelector('.seg-transcribe').addEventListener('click', (function (s, c) {
-      return function () { transcribeOne(s, c); };
+    card.querySelector('.seg-transcribe').addEventListener('click', (function (sid, c) {
+      return function () { transcribeOne(sid, c); };
     })(seg.id, card));
-    card.querySelector('.seg-delete').addEventListener('click', (function (s) {
-      return function () { deleteSegment(s); };
+    card.querySelector('.seg-delete').addEventListener('click', (function (sid) {
+      return function () { deleteSegment(sid); };
     })(seg.id));
-
     el.appendChild(card);
   });
 }
 
 function saveSegText(segId, textarea) {
-  var text = textarea.value;
-  api('/api/segment/' + segId + '/text', 'PUT', { text: text }).then(function () {
-    textarea.classList.remove('unsaved');
-    var seg = state.segments.find(function (s) { return s.id === segId; });
-    if (seg) { seg.text = text; seg.transcribed = !!text.trim(); }
-  }).catch(function () {});
+  api('/api/segment/' + encodeURIComponent(segId) + '/text', 'PUT', { text: textarea.value })
+    .then(function () {
+      textarea.classList.remove('unsaved');
+      var seg = state.segments.find(function (s) { return s.id === segId; });
+      if (seg) { seg.text = textarea.value; seg.transcribed = !!textarea.value.trim(); }
+      markDatasetDirty();
+    }).catch(function () {});
 }
 
 function playSegment(segId) {
   var audio = document.getElementById('mini-audio');
-  var player = document.getElementById('mini-player');
-  audio.src = '/audio/segment/' + segId;
-  player.classList.remove('hidden');
+  document.getElementById('mini-player').classList.remove('hidden');
+  audio.src = '/audio/segment/' + encodeURIComponent(segId);
   audio.play();
 }
 
 function transcribeOne(segId, card) {
   var btn = card.querySelector('.seg-transcribe');
-  btn.disabled = true;
-  btn.textContent = '...';
-  api('/api/segment/' + segId + '/transcribe', 'POST').then(function (result) {
-    var seg = state.segments.find(function (s) { return s.id === segId; });
-    if (seg) { seg.text = result.text; seg.transcribed = true; }
-    card.querySelector('.seg-text').value = result.text;
-    card.classList.remove('untranscribed');
-  }).catch(function (e) {
-    alert('Transcription error: ' + e.message);
-  }).finally(function () {
-    btn.disabled = false;
-    btn.textContent = '🎙';
+  withSpinner(btn, function () {
+    return api('/api/segment/' + encodeURIComponent(segId) + '/transcribe', 'POST').then(function (res) {
+      var seg = state.segments.find(function (s) { return s.id === segId; });
+      if (seg) { seg.text = res.text; seg.transcribed = true; }
+      card.querySelector('.seg-text').value = res.text;
+      card.classList.remove('untranscribed');
+    }).catch(function (e) { alert('Transcription error: ' + e.message); });
   });
 }
 
 function deleteSegment(segId) {
   if (!confirm('Delete this segment?')) return;
-  api('/api/segment/' + segId, 'DELETE').then(function () {
+  api('/api/segment/' + encodeURIComponent(segId), 'DELETE').then(function () {
     state.segments = state.segments.filter(function (s) { return s.id !== segId; });
-    renderSegmentList();
-    renderFileList();
+    renderSegmentList(); renderFileList();
+    markDatasetDirty();
   }).catch(function (e) { alert('Delete error: ' + e.message); });
 }
 
-// ─── Transcribe all (SSE) ─────────────────────────────────────────────────────
+// ─── Transcribe all ───────────────────────────────────────────────────────────
 function transcribeAll() {
   var btn = document.getElementById('btn-transcribe-all');
   var prog = document.getElementById('transcribe-progress');
-  btn.disabled = true;
-  prog.textContent = 'Starting...';
-
-  fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
-    if (event.total !== undefined) prog.textContent = '0 / ' + event.total;
-    if (event.progress !== undefined) {
-      prog.textContent = event.progress + ' / ' + event.total;
-      var seg = state.segments.find(function (s) { return s.id === event.id; });
-      if (seg && event.text) {
-        seg.text = event.text;
-        seg.transcribed = true;
-        var card = document.querySelector('.seg-card[data-id="' + event.id + '"]');
-        if (card) {
-          card.querySelector('.seg-text').value = event.text;
-          card.classList.remove('untranscribed');
+  withSpinner(btn, function () {
+    prog.textContent = 'Starting...';
+    return fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
+      if (event.total !== undefined) prog.textContent = '0 / ' + event.total;
+      if (event.progress !== undefined) {
+        prog.textContent = event.progress + ' / ' + event.total;
+        var seg = state.segments.find(function (s) { return s.id === event.id; });
+        if (seg && event.text) {
+          seg.text = event.text; seg.transcribed = true;
+          var card = document.querySelector('.seg-card[data-id="' + event.id + '"]');
+          if (card) { card.querySelector('.seg-text').value = event.text; card.classList.remove('untranscribed'); }
         }
       }
-    }
-    if (event.done) { prog.textContent = 'Done'; btn.disabled = false; }
-  }).catch(function (e) {
-    prog.textContent = 'Error: ' + e.message;
-    btn.disabled = false;
+      if (event.done) prog.textContent = 'Done';
+    }).catch(function (e) { prog.textContent = 'Error: ' + e.message; });
   });
 }
 
-// ─── Training tab ─────────────────────────────────────────────────────────────
-function buildDataset() {
-  var btn = document.getElementById('btn-build-dataset');
+// ─── Dataset dirty tracking ───────────────────────────────────────────────────
+var datasetDirty = false;
+
+function markDatasetDirty() {
+  datasetDirty = true;
+  document.getElementById('btn-build-dataset').classList.add('dirty');
+  document.getElementById('dataset-dirty-msg').classList.remove('hidden');
+}
+
+function clearDatasetDirty() {
+  datasetDirty = false;
+  document.getElementById('btn-build-dataset').classList.remove('dirty');
+  document.getElementById('dataset-dirty-msg').classList.add('hidden');
+}
+
+// ─── Training ─────────────────────────────────────────────────────────────────
+function getDatasetNames() {
+  var speakerName = document.getElementById('speaker-name').value.trim();
+  var jobName = document.getElementById('job-name').value.trim() || speakerName;
+  return {
+    jobName: jobName,
+    speakerName: speakerName || jobName,
+  };
+}
+
+function buildDataset(overwrite) {
+  if (!ensureIrodoriRoot()) return Promise.resolve();
   var result = document.getElementById('build-result');
-  btn.disabled = true;
+  var paths = document.getElementById('build-paths');
   result.textContent = '';
-  api('/api/build_dataset', 'POST', {
-    job_name: document.getElementById('job-name').value.trim(),
-    speaker_name: document.getElementById('speaker-name').value.trim(),
-  }).then(function (res) {
-    result.textContent = res.count + ' samples saved';
+  paths.classList.add('hidden');
+  var names = getDatasetNames();
+  if (!names.jobName) {
+    result.textContent = 'キャラクター名または出力先データセット名を入力してください';
+    result.style.color = 'var(--danger)';
+    return Promise.resolve();
+  }
+  document.getElementById('job-name').value = names.jobName;
+  var payload = {
+    job_name: names.jobName,
+    speaker_name: names.speakerName,
+    overwrite: !!overwrite,
+    device: document.getElementById('train-device').value,
+    precision: document.getElementById('precision').value,
+    max_steps: parseInt(document.getElementById('max-steps').value, 10),
+    batch_size: parseInt(document.getElementById('batch-size').value, 10),
+    grad_accum: parseInt(document.getElementById('grad-accum').value, 10),
+    tokens: parseInt(document.getElementById('tokens').value, 10),
+    learning_rate: parseFloat(document.getElementById('lr').value),
+    save_every: parseInt(document.getElementById('save-every').value, 10),
+    normalize_db: document.getElementById('normalize-db').value,
+    init_embedding: document.getElementById('init-embedding').value.trim(),
+    irodori_root: settings.irodori_root,
+    uv_exe: settings.uv_exe,
+  };
+  return api('/api/build_dataset', 'POST', payload).then(function (res) {
+    result.textContent = res.count + ' samples';
     result.style.color = 'var(--success)';
+    paths.innerHTML =
+      '📁 ' + res.dataset_dir + '<br>' +
+      '📄 source.jsonl  ·  train.bat  ·  train.sh';
+    paths.classList.remove('hidden');
+    clearDatasetDirty();
+    refreshDatasets();
+    refreshDataDatasetProjects();
   }).catch(function (e) {
+    // 409 = dataset already exists → ask to overwrite
+    if (e.message.indexOf('409') === 0) {
+      if (confirm('Dataset "' + payload.job_name + '" already exists.\nOverwrite WAVs and scripts?')) {
+        return buildDataset(true);
+      }
+      return;
+    }
     result.textContent = 'Error: ' + e.message;
     result.style.color = 'var(--danger)';
-  }).finally(function () { btn.disabled = false; });
+    throw e;
+  });
+}
+
+// ─── Dataset list & load ──────────────────────────────────────────────────────
+function refreshDatasets() {
+  api('/api/datasets').then(function (data) {
+    var el = document.getElementById('dataset-list');
+    if (!data.datasets.length) {
+      el.innerHTML = '<span class="dim" style="font-size:12px">データセットなし</span>';
+      return;
+    }
+    el.innerHTML = '';
+    data.datasets.forEach(function (ds) {
+      var row = document.createElement('div');
+      row.className = 'dataset-row';
+      row.innerHTML =
+        '<span class="ds-name">' + esc(ds.name) + '</span>' +
+        '<span class="ds-badge ' + (ds.has_source ? 'ok' : 'dim') + '">source</span>' +
+        '<span class="ds-badge ' + (ds.has_manifest ? 'ok' : 'dim') + '">manifest</span>' +
+        '<span class="ds-badge ' + (ds.has_embedding ? 'ok' : 'dim') + '">embedding</span>' +
+        '<span class="dim" style="font-size:11px">' + ds.segment_count + '件</span>' +
+        '<button class="load-ds-btn" data-name="' + esc(ds.name) + '">Load</button>';
+      row.querySelector('.load-ds-btn').addEventListener('click', (function (name) {
+        return function () { loadDatasetProject(name); };
+      })(ds.name));
+      el.appendChild(row);
+    });
+  }).catch(function () {});
+}
+
+function refreshDataDatasetProjects() {
+  var el = document.getElementById('dataset-project-list');
+  if (!el) return;
+  el.innerHTML = '<span class="dim" style="font-size:12px">Select a dataset folder to restore data preparation.</span>';
+}
+
+function loadDatasetProject(name) {
+  var btn = document.querySelector('.load-ds-btn[data-name="' + esc(name) + '"]');
+  var doLoad = function () {
+    return api('/api/datasets/' + encodeURIComponent(name) + '/load', 'POST').then(function (res) {
+      document.getElementById('job-name').value = name;
+      return refreshStatePromise().then(function () {
+        if (res.first_file_id) selectFile(res.first_file_id);
+      });
+    }).then(function () {
+      clearDatasetDirty();
+      refreshDataDatasetProjects();
+      setStatus('Loaded project: ' + name, false);
+      document.querySelector('.tab[data-tab="data"]').click();
+    });
+  };
+  if (btn) {
+    withSpinner(btn, doLoad);
+  } else {
+    doLoad().catch(function (e) { setStatus('Load error: ' + e.message, true); });
+  }
 }
 
 function prepareManifest() {
+  if (!ensureIrodoriRoot()) return;
+  var names = getDatasetNames();
+  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return; }
+  document.getElementById('job-name').value = names.jobName;
   var log = document.getElementById('train-log');
   log.textContent = '';
   appendLog(log, 'Starting manifest preparation...\n', '');
   fetchSSE('/api/prepare_manifest', 'POST', {
-    job_name: document.getElementById('job-name').value.trim(),
+    job_name: names.jobName,
     device: document.getElementById('prep-device').value,
     normalize_db: document.getElementById('normalize-db').value,
     max_seconds: parseFloat(document.getElementById('max-seconds').value || '0'),
     irodori_root: settings.irodori_root,
-    python_exe: settings.python_exe,
-  }, function (event) { handleLogEvent(event, log); }).catch(function (e) {
+    uv_exe: settings.uv_exe,
+  }, function (ev) { handleLogEvent(ev, log); }).catch(function (e) {
     appendLog(log, 'Error: ' + e.message + '\n', 'log-error');
   });
 }
 
 function startTraining() {
+  if (!ensureIrodoriRoot()) return;
+  var names = getDatasetNames();
+  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return; }
+  document.getElementById('job-name').value = names.jobName;
   var log = document.getElementById('train-log');
   log.textContent = '';
   appendLog(log, 'Starting training...\n', '');
@@ -448,9 +984,8 @@ function startTraining() {
   var stop = document.getElementById('btn-stop-train');
   btn.classList.add('hidden');
   stop.classList.remove('hidden');
-
   fetchSSE('/api/train', 'POST', {
-    job_name: document.getElementById('job-name').value.trim(),
+    job_name: names.jobName,
     device: document.getElementById('train-device').value,
     precision: document.getElementById('precision').value,
     max_steps: parseInt(document.getElementById('max-steps').value, 10),
@@ -462,8 +997,8 @@ function startTraining() {
     init_embedding: document.getElementById('init-embedding').value.trim(),
     checkpoint_path: settings.checkpoint_path,
     irodori_root: settings.irodori_root,
-    python_exe: settings.python_exe,
-  }, function (event) { handleLogEvent(event, log); }).then(function () {
+    uv_exe: settings.uv_exe,
+  }, function (ev) { handleLogEvent(ev, log); }).then(function () {
     refreshRuns();
   }).catch(function (e) {
     appendLog(log, 'Error: ' + e.message + '\n', 'log-error');
@@ -473,7 +1008,7 @@ function startTraining() {
   });
 }
 
-// ─── Test tab ─────────────────────────────────────────────────────────────────
+// ─── Test ─────────────────────────────────────────────────────────────────────
 function refreshRuns() {
   api('/api/runs').then(function (data) {
     var sel = document.getElementById('embed-select');
@@ -482,8 +1017,7 @@ function refreshRuns() {
     data.runs.forEach(function (run) {
       if (!run.has_embedding) return;
       var opt = document.createElement('option');
-      opt.value = run.embedding_path;
-      opt.textContent = run.name;
+      opt.value = run.embedding_path; opt.textContent = run.name;
       sel.appendChild(opt);
     });
     if (cur) sel.value = cur;
@@ -491,47 +1025,32 @@ function refreshRuns() {
 }
 
 function generateAudio() {
+  if (!ensureIrodoriRoot()) return;
   var log = document.getElementById('gen-log');
   var outputSection = document.getElementById('output-section');
-  log.textContent = '';
-  outputSection.classList.add('hidden');
-
-  var embPath = document.getElementById('embed-select').value ||
-    document.getElementById('embed-path-custom').value.trim();
+  log.textContent = ''; outputSection.classList.add('hidden');
+  var embPath = document.getElementById('embed-select').value || document.getElementById('embed-path-custom').value.trim();
   if (!embPath) { alert('Select a speaker embedding'); return; }
   var text = document.getElementById('test-text').value.trim();
   if (!text) { alert('Enter text to synthesize'); return; }
-
   appendLog(log, 'Starting generation...\n', '');
-
   fetchSSE('/api/generate', 'POST', {
-    text: text,
-    embedding_path: embPath,
-    checkpoint_path: settings.checkpoint_path,
+    text: text, embedding_path: embPath, checkpoint_path: settings.checkpoint_path,
     output_name: 'output_' + Date.now(),
     num_steps: parseInt(document.getElementById('gen-steps').value, 10),
     seed: parseInt(document.getElementById('gen-seed').value, 10),
-    irodori_root: settings.irodori_root,
-    python_exe: settings.python_exe,
-  }, function (event) {
-    handleLogEvent(event, log);
-    if (event.audio_url) {
-      document.getElementById('output-audio').src = event.audio_url;
-      outputSection.classList.remove('hidden');
-    }
-  }).catch(function (e) {
-    appendLog(log, 'Error: ' + e.message + '\n', 'log-error');
-  });
+    irodori_root: settings.irodori_root, uv_exe: settings.uv_exe,
+  }, function (ev) {
+    handleLogEvent(ev, log);
+    if (ev.audio_url) { document.getElementById('output-audio').src = ev.audio_url; outputSection.classList.remove('hidden'); }
+  }).catch(function (e) { appendLog(log, 'Error: ' + e.message + '\n', 'log-error'); });
 }
 
-// ─── Log helpers ──────────────────────────────────────────────────────────────
+// ─── Log ──────────────────────────────────────────────────────────────────────
 function handleLogEvent(event, logEl) {
   if (event.log !== undefined) appendLog(logEl, event.log + '\n', '');
-  if (event.done) {
-    appendLog(logEl, '\n[Done rc=' + event.rc + ']\n', event.rc === 0 ? 'log-done' : 'log-error');
-  }
+  if (event.done) appendLog(logEl, '\n[Done rc=' + event.rc + ']\n', event.rc === 0 ? 'log-done' : 'log-error');
 }
-
 function appendLog(el, text, cls) {
   var span = document.createElement('span');
   span.textContent = text;
@@ -540,36 +1059,21 @@ function appendLog(el, text, cls) {
   el.scrollTop = el.scrollHeight;
 }
 
-// ─── SSE via fetch (supports POST) ───────────────────────────────────────────
+// ─── SSE fetch ────────────────────────────────────────────────────────────────
 function fetchSSE(url, method, body, onEvent) {
   var opts = { method: method || 'GET', headers: {} };
-  if (body && !(body instanceof FormData)) {
-    opts.headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
-  } else if (body instanceof FormData) {
-    opts.body = body;
-  }
-
+  if (body && !(body instanceof FormData)) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  else if (body instanceof FormData) { opts.body = body; }
   return fetch(url, opts).then(function (res) {
-    if (!res.ok) {
-      return res.text().then(function (txt) {
-        throw new Error(res.status + ': ' + txt);
-      });
-    }
-    var reader = res.body.getReader();
-    var decoder = new TextDecoder();
-    var buf = '';
-
+    if (!res.ok) return res.text().then(function (t) { throw new Error(res.status + ': ' + t); });
+    var reader = res.body.getReader(), decoder = new TextDecoder(), buf = '';
     function pump() {
-      return reader.read().then(function (result) {
-        if (result.done) return;
-        buf += decoder.decode(result.value, { stream: true });
-        var lines = buf.split('\n');
-        buf = lines.pop();
+      return reader.read().then(function (r) {
+        if (r.done) return;
+        buf += decoder.decode(r.value, { stream: true });
+        var lines = buf.split('\n'); buf = lines.pop();
         lines.forEach(function (line) {
-          if (line.indexOf('data: ') === 0) {
-            try { onEvent(JSON.parse(line.slice(6))); } catch (e) { console.warn('SSE parse error', e); }
-          }
+          if (line.indexOf('data: ') === 0) { try { onEvent(JSON.parse(line.slice(6))); } catch (e) {} }
         });
         return pump();
       });
@@ -578,28 +1082,20 @@ function fetchSSE(url, method, body, onEvent) {
   });
 }
 
-// ─── API helpers ──────────────────────────────────────────────────────────────
+// ─── API ──────────────────────────────────────────────────────────────────────
 function api(url, method, body) {
   var opts = { method: method || 'GET', headers: {} };
-  if (body && !(body instanceof FormData)) {
-    opts.headers['Content-Type'] = 'application/json';
-    opts.body = JSON.stringify(body);
-  } else if (body instanceof FormData) {
-    opts.body = body;
-  }
+  if (body && !(body instanceof FormData)) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  else if (body instanceof FormData) { opts.body = body; }
   return fetch(url, opts).then(function (res) {
-    if (!res.ok) {
-      return res.text().then(function (txt) {
-        throw new Error(res.status + ': ' + txt);
-      });
-    }
+    if (!res.ok) return res.text().then(function (t) { throw new Error(res.status + ': ' + t); });
     return res.json();
   });
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// ─── Utils ────────────────────────────────────────────────────────────────────
 function esc(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function fmtDur(sec) {
   if (!sec || sec < 0) return '0s';

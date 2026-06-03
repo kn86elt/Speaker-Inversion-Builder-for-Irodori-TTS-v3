@@ -158,14 +158,98 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .seg-count-badge { background: var(--bg3); border-radius: 3px; color: var(--dim); font-size: 10px; padding: 1px 5px; }
 
 /* ─── Waveform ───────────────────────────────────────────────── */
-#waveform-container {
+#waveform-wrap {
+  position: relative;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  cursor: text;
+  user-select: none;
 }
-#waveform { min-height: 80px; }
+#waveform-inner { min-height: 80px; }
 #waveform-time { font-size: 11px; padding: 4px 8px; color: var(--dim); }
+
+/* Overlay layers inside #waveform-wrap */
+.wf-layer {
+  position: absolute;
+  inset: 0;
+}
+#wf-interact {
+  cursor: text;
+  z-index: 10;
+}
+#wf-markers {
+  pointer-events: none;
+  z-index: 8;
+}
+#wf-sel {
+  pointer-events: none;
+  z-index: 7;
+  background: rgba(74, 158, 255, 0.18);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+}
+
+/* Individual marker line inside #wf-markers */
+.wf-marker-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 80, 80, 0.85);
+  transform: translateX(-1px);
+}
+.wf-marker-line.virtual {
+  background: rgba(255, 210, 80, 0.85);
+}
+.wf-marker-label {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 9px;
+  color: rgba(255, 140, 140, 1);
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1;
+}
+.wf-marker-line.virtual .wf-marker-label {
+  color: rgba(255, 225, 120, 1);
+}
+
+/* File info bar */
+#file-info-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+#file-info-bar input[type=number] {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+/* Selection toolbar */
+#sel-toolbar {
+  background: rgba(74,158,255,.07);
+  border: 1px solid rgba(74,158,255,.25);
+  border-radius: 6px;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+/* Volume slider */
+#volume-slider {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 /* ─── Waveform controls ──────────────────────────────────────── */
 #waveform-controls { display: flex; flex-direction: column; gap: 10px; }
@@ -182,13 +266,21 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   background: rgba(255,100,100,.15);
   border: 1px solid rgba(255,100,100,.4);
   border-radius: 4px;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
   padding: 2px 6px;
+  transition: background .12s;
 }
+.marker-chip:hover { background: rgba(255,100,100,.28); }
 .marker-chip .remove-marker { cursor: pointer; color: var(--danger); font-size: 13px; line-height: 1; }
+.marker-chip.virtual-marker {
+  background: rgba(255,210,80,.12);
+  border-color: rgba(255,210,80,.38);
+}
+.marker-chip.virtual-marker:hover { background: rgba(255,210,80,.22); }
 
 /* ─── Segments grid ──────────────────────────────────────────── */
 .segment-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 8px; }
@@ -258,6 +350,71 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .hidden { display: none !important; }
 h3 { font-size: 14px; }
 h4 { font-size: 13px; margin-bottom: 8px; }
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 100;
+}
+.modal-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .35);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 560px;
+  padding: 18px;
+  width: min(560px, 100%);
+}
+
+/* ─── Spinner ────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255,255,255,0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+}
+
+/* ─── Dataset list ───────────────────────────────────────────── */
+.dataset-list { display: flex; flex-direction: column; gap: 5px; }
+.dataset-row {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.dataset-row .ds-name { font-weight: 600; flex: 1; }
+.ds-badge {
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+.ds-badge.ok  { background: rgba(76,175,80,.2); color: #81c784; }
+.ds-badge.dim { background: rgba(255,255,255,.06); color: var(--dim); }
+
+/* Dirty indicator on Build Dataset button */
+#btn-build-dataset.dirty::after {
+  content: " ●";
+  color: var(--warning);
+  font-size: 10px;
+}
 
 /* ─── Scrollbar ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
