@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1287,10 +1288,17 @@ async def list_runs():
         if not d.is_dir():
             continue
         embed = d / "checkpoint_final.speaker.safetensors"
+        step_files = sorted(
+            [f for f in d.glob("checkpoint_*.speaker.safetensors")
+             if f.stem != "checkpoint_final"],
+            key=lambda f: int(m.group(1)) if (m := re.search(r"_(\d+)$", f.stem)) else 0,
+            reverse=True,
+        )
         runs.append({
             "name": d.name,
             "has_embedding": embed.exists(),
             "embedding_path": str(embed) if embed.exists() else None,
+            "step_embeddings": [{"name": f.name, "path": str(f)} for f in step_files],
         })
     return {"runs": runs}
 

@@ -216,6 +216,11 @@
             <button id="btn-refresh-runs" title="更新">⟳</button>
           </div>
         </label>
+        <label style="grid-column:span 2">Step Embeddings
+          <select id="step-embed-select" size="6" style="width:100%;font-family:monospace;font-size:12px">
+            <option value="" disabled>-- run を選択すると表示されます --</option>
+          </select>
+        </label>
         <label style="grid-column:span 2">Speaker Embedding 直接パス（.speaker.safetensors）
           <input type="text" id="embed-path-custom" placeholder="一覧にない .speaker.safetensors を指定する場合">
         </label>

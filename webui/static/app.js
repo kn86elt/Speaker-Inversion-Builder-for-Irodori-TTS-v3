@@ -9,6 +9,7 @@ var splitMarkers = [];   // seconds within current file
 var loopEnabled = false;
 var selState = { active: false, confirmed: false, startT: 0, endT: 0, startX: 0, hasDrag: false };
 var settings = { irodori_root: '', uv_exe: '', checkpoint_path: '' };
+var runsData = [];
 var suggestedIrodoriRoot = '';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -133,6 +134,7 @@ function bindUI() {
 
   // Test tab
   document.getElementById('btn-refresh-runs').addEventListener('click', refreshRuns);
+  document.getElementById('embed-select').addEventListener('change', updateStepEmbedList);
   document.getElementById('btn-generate').addEventListener('click', function () {
     withSpinner(this, generateAudio);
   });
@@ -1165,17 +1167,43 @@ function startTraining() {
 // ─── Test ─────────────────────────────────────────────────────────────────────
 function refreshRuns() {
   api('/api/runs').then(function (data) {
+    runsData = data.runs || [];
     var sel = document.getElementById('embed-select');
     var cur = sel.value;
     sel.innerHTML = '<option value="">-- Select --</option>';
-    data.runs.forEach(function (run) {
+    runsData.forEach(function (run) {
       if (!run.has_embedding) return;
       var opt = document.createElement('option');
       opt.value = run.embedding_path; opt.textContent = run.name;
       sel.appendChild(opt);
     });
     if (cur) sel.value = cur;
+    updateStepEmbedList();
   }).catch(function () {});
+}
+
+function updateStepEmbedList() {
+  var sel = document.getElementById('embed-select');
+  var stepSel = document.getElementById('step-embed-select');
+  var run = runsData.find(function (r) { return r.embedding_path === sel.value; });
+  stepSel.innerHTML = '';
+  if (!run) {
+    var opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '-- run を選択すると表示されます --';
+    opt.disabled = true;
+    stepSel.appendChild(opt);
+    return;
+  }
+  var finalOpt = document.createElement('option');
+  finalOpt.value = run.embedding_path;
+  finalOpt.textContent = 'checkpoint_final.speaker.safetensors';
+  finalOpt.selected = true;
+  stepSel.appendChild(finalOpt);
+  (run.step_embeddings || []).forEach(function (e) {
+    var opt = document.createElement('option');
+    opt.value = e.path; opt.textContent = e.name;
+    stepSel.appendChild(opt);
+  });
 }
 
 function generateAudio() {
@@ -1183,7 +1211,9 @@ function generateAudio() {
   var log = document.getElementById('gen-log');
   var outputSection = document.getElementById('output-section');
   log.textContent = ''; outputSection.classList.add('hidden');
-  var embPath = document.getElementById('embed-select').value || document.getElementById('embed-path-custom').value.trim();
+  var embPath = document.getElementById('embed-path-custom').value.trim()
+    || document.getElementById('step-embed-select').value
+    || document.getElementById('embed-select').value;
   if (!embPath) { alert('Select a speaker embedding'); return Promise.resolve(); }
   var text = document.getElementById('test-text').value.trim();
   if (!text) { alert('Enter text to synthesize'); return Promise.resolve(); }
@@ -1196,7 +1226,7 @@ function generateAudio() {
     irodori_root: settings.irodori_root, uv_exe: settings.uv_exe,
   }, function (ev) {
     handleLogEvent(ev, log);
-    if (ev.audio_url) { document.getElementById('output-audio').src = ev.audio_url; outputSection.classList.remove('hidden'); }
+    if (ev.audio_url) { var a = document.getElementById('output-audio'); a.src = ev.audio_url; outputSection.classList.remove('hidden'); a.play(); }
   }).catch(function (e) { appendLog(log, 'Error: ' + e.message + '\n', 'log-error'); });
 }
 
