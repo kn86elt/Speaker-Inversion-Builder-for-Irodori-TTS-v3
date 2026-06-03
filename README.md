@@ -1,6 +1,8 @@
-# Irodori-TTS v3 Speaker Inversion WebUI
+# Speaker Inversion Builder WebUI for Irodori-TTS v3
 
 Irodori-TTS v3 の Speaker Inversion 用データセット作成、文字起こし、学習をブラウザから行うためのローカル WebUI です。
+
+![スクリーンショット](screenshot/screenshot.jpg)
 
 ## できること
 
@@ -56,12 +58,15 @@ C:\path\to\Irodori-TTS-v3
    - 生成済みのデータセットをプロジェクトとして再度読み出しできます。
 
 2. **セグメント**
-   - 分割したセグメントごとに読み上げテキストを入力または修正します。
-   - `全セグメント文字起こし` で未入力セグメントをまとめて文字起こしできます。
+![セグメントタブ](screenshot/screenshot2.jpg)
+   - 分割したセグメントごとに学習用に読み上げテキストを入力または修正します。
+   - `全セグメント文字起こし` ですべてのセグメントをまとめて自動文字起こしできます。
    - 自動文字起こしで空欄または不正確なテキストとなった音声は手入力で修正してください。
-   - 文字起こしはCPU推論を使用しています。
+   - 文字起こしはfaster-whisperのCPU推論を使用しています。
+   - 起動バッチファイルを修正すればcudaによる推論に変更できますが必要ファイルが増加しvenvが大きくなります。必要に応じて設定してください。
 
 3. **学習**
+4. ![学習タブ](screenshot/screenshot3.jpg)
    - `データセット構築` を実行します。
    - `Manifest 準備実行` を実行します。
    - `学習開始` を実行します。
@@ -70,9 +75,10 @@ C:\path\to\Irodori-TTS-v3
    (途中の学習経過ファイルも保存されます。問題なければcheckpoint_final 以外は削除してください)
    - embeddings の拡張子は必ず「.speaker.safetensors」としてください
 
-4. **テスト生成**
+5. **テスト生成**
+6. ![テスト生成タブ](screenshot/screenshot4.jpg)
    - 学習済み speaker embedding を選択します。
-   - テキストを入力して音声生成を実行します。
+   - テキストを入力して音声生成を実行し学習結果を確認できます。
    - 一覧にない embedding は `Speaker Embedding 直接パス（.speaker.safetensors）` に直接指定できます。
 
 ## 出力物
