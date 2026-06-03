@@ -43,6 +43,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Optional: GPU transcription via CUDA (faster-whisper).
+:: Requires an NVIDIA GPU with CUDA drivers installed.
+:: To enable: uncomment the two lines below.
+
+:: "%UV%" pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+:: set WHISPER_DEVICE=cuda
+
+start /min cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:%PORT%"
 "%UV%" run --no-sync python -u "%APP_SCRIPT%" --host 0.0.0.0 --port %PORT%
 
 echo.

@@ -374,7 +374,8 @@ def _do_transcribe_many(wav_paths: list[Path]) -> dict[str, str]:
     if not wav_paths:
         return {}
     worker = WEBUI_DIR / "transcribe_worker.py"
-    cmd = [sys.executable, str(worker)] + [str(path) for path in wav_paths]
+    device = os.environ.get("WHISPER_DEVICE", "cpu")
+    cmd = [sys.executable, str(worker), "--device", device] + [str(path) for path in wav_paths]
     proc = subprocess.run(
         cmd,
         cwd=str(PROJECT_ROOT),

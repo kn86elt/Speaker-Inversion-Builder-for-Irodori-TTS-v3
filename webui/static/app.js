@@ -549,6 +549,7 @@ function selectFile(fileId) {
   document.getElementById('waveform-controls').classList.remove('hidden');
   document.getElementById('waveform-filename').textContent = f ? f.name : '';
   document.getElementById('waveform-time').textContent = 'Loading...';
+  document.getElementById('waveform-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   document.getElementById('file-info-bar').classList.add('hidden');
 
   if (wavesurfer) { wavesurfer.destroy(); wavesurfer = null; }
@@ -814,6 +815,7 @@ function doSplit(segId) {
   return api('/api/segment/' + encodeURIComponent(segId) + '/split', 'POST', { positions: splitMarkers }).then(function () {
     clearMarkers();
     refreshState();
+    document.querySelector('.tab[data-tab="segments"]').click();
   }).catch(function (e) { alert('Split error: ' + e.message); });
 }
 
@@ -906,18 +908,24 @@ function transcribeAll() {
   var btn = document.getElementById('btn-transcribe-all');
   var prog = document.getElementById('transcribe-progress');
   var failed = 0;
-  withSpinner(btn, function () {
-    prog.textContent = 'Starting...';
-    return fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
-      if (event.total !== undefined) prog.textContent = '0 / ' + event.total;
-      if (event.progress !== undefined) {
-        prog.textContent = event.progress + ' / ' + event.total;
-        if (event.error) {
-          failed += 1;
-          prog.textContent += ' (' + failed + ' failed)';
-          setStatus('Transcription error: ' + event.error, true);
-          return;
-        }
+  var origHTML = btn.innerHTML;
+
+  btn.disabled = true;
+  prog.textContent = '';
+
+  function setBtnProgress(text) {
+    btn.innerHTML = '<span class="spinner"></span> ' + text;
+  }
+
+  setBtnProgress('...');
+
+  fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
+    if (event.total !== undefined) setBtnProgress('0 / ' + event.total + ' 完了');
+    if (event.progress !== undefined) {
+      if (event.error) {
+        failed += 1;
+        setStatus('Transcription error: ' + event.error, true);
+      } else {
         var seg = state.segments.find(function (s) { return s.id === event.id; });
         if (seg && event.text !== undefined) {
           seg.text = event.text; seg.transcribed = true;
@@ -925,8 +933,14 @@ function transcribeAll() {
           if (card) { card.querySelector('.seg-text').value = event.text; card.classList.remove('untranscribed'); }
         }
       }
-      if (event.done) prog.textContent = failed ? 'Done (' + failed + ' failed)' : 'Done';
-    }).catch(function (e) { prog.textContent = 'Error: ' + e.message; });
+      setBtnProgress(event.progress + ' / ' + event.total + (failed ? ' (' + failed + ' failed)' : ' 完了'));
+    }
+    if (event.done) prog.textContent = failed ? 'Done (' + failed + ' failed)' : 'Done';
+  }).catch(function (e) {
+    prog.textContent = 'Error: ' + e.message;
+  }).finally(function () {
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
   });
 }
 
