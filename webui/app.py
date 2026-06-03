@@ -1503,7 +1503,7 @@ def _write_train_scripts(
         "@echo off",
         "chcp 65001 >nul",
         "setlocal",
-        ":: Speaker Inversion – standalone training script",
+        ":: Speaker Inversion - standalone training script",
         f":: Dataset   : {name}",
         f":: Generated : {now}",
         ":: Edit the variables below to adjust parameters.",
@@ -1548,17 +1548,17 @@ def _write_train_scripts(
         'if not exist "%CHECKPOINT%" ( echo [ERROR] checkpoint not found: "%CHECKPOINT%" & pause & exit /b 1 )',
         'cd /d "%IRODORI%" || ( echo [ERROR] Failed to enter Irodori root: "%IRODORI%" & pause & exit /b 1 )',
         "",
+        'set "DETECT_PY=%TEMP%\\irodori_detect_device_%RANDOM%.py"',
+        '> "%DETECT_PY%" echo import torch',
+        '>> "%DETECT_PY%" echo device="cpu"',
+        '>> "%DETECT_PY%" echo if torch.cuda.is_available(): device="cuda"',
+        '>> "%DETECT_PY%" echo elif hasattr(torch, "xpu") and torch.xpu.is_available(): device="xpu"',
+        '>> "%DETECT_PY%" echo elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available(): device="mps"',
+        '>> "%DETECT_PY%" echo print(device)',
         'if /i "%DEVICE%"=="auto" (',
-        '  set "DETECT_PY=%TEMP%\\irodori_detect_device_%RANDOM%.py"',
-        '  > "%DETECT_PY%" echo import torch',
-        '  >> "%DETECT_PY%" echo device="cpu"',
-        '  >> "%DETECT_PY%" echo if torch.cuda.is_available(): device="cuda"',
-        '  >> "%DETECT_PY%" echo elif hasattr(torch, "xpu") and torch.xpu.is_available(): device="xpu"',
-        '  >> "%DETECT_PY%" echo elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available(): device="mps"',
-        '  >> "%DETECT_PY%" echo print(device)',
         '  for /f "delims=" %%D in (\'"%UV%" run --no-sync python "%DETECT_PY%"\') do set "DEVICE=%%D"',
-        '  del "%DETECT_PY%" >nul 2>&1',
         ')',
+        'del "%DETECT_PY%" >nul 2>&1',
         'if /i "%DEVICE%"=="auto" set "DEVICE=cpu"',
         'echo [INFO] Device: %DEVICE%',
         'echo [INFO] If audio decoding fails on Windows, install/pass a full shared FFmpeg build and set FFMPEG_BIN.',
@@ -1623,7 +1623,7 @@ def _write_train_scripts(
         f'echo Done. Embedding: %OUTPUT_DIR%\\checkpoint_final.speaker.safetensors',
         "pause",
     ]
-    (dataset_dir / "train.bat").write_text("\r\n".join(bat), encoding="utf-8", newline="")
+    (dataset_dir / "train.bat").write_text("\r\n".join(bat), encoding="cp932", newline="")
 
     # ── train.sh (Unix / WSL) ────────────────────────────────────────────────
     sh = [
