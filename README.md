@@ -1,5 +1,7 @@
 # Speaker Inversion Builder WebUI for Irodori-TTS v3
 
+**[English README](README-en.md)**
+
 Irodori-TTS v3 の Speaker Inversion 用データセット作成、文字起こし、学習をブラウザから行うためのローカル WebUI です。
 
 ![スクリーンショット](screenshot/screenshot.jpg)
@@ -15,6 +17,7 @@ Irodori-TTS v3 の Speaker Inversion 用データセット作成、文字起こ�
 - WebUI からの学習実行
 - 学習用バッチファイルの雛形生成
 - 学習済み speaker embedding を使ったテスト音声生成
+- UI 言語の切り替え（日本語 / English）
 
 ## 起動
 

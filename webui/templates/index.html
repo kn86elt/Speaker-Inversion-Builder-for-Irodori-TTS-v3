@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="ja" id="html-root">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,16 +11,20 @@
   <div class="header-inner">
     <h1>Speaker Inversion Builder</h1>
     <span class="subtitle">for Irodori-TTS v3</span>
+    <select id="lang-select" class="lang-select" onchange="I18N.setLang(this.value)">
+      <option value="ja">日本語</option>
+      <option value="en">English</option>
+    </select>
   </div>
 </header>
 
 <div id="status-bar" style="display:none;padding:4px 16px;font-size:12px;background:var(--card);border-bottom:1px solid var(--border)"></div>
 <nav id="tab-nav">
-  <button class="tab active" data-tab="data">データ準備</button>
-  <button class="tab" data-tab="segments">セグメント</button>
-  <button class="tab" data-tab="train">学習</button>
-  <button class="tab" data-tab="test">テスト</button>
-  <button class="tab" data-tab="settings">設定</button>
+  <button class="tab active" data-tab="data" data-i18n="tab_data">データ準備</button>
+  <button class="tab" data-tab="segments" data-i18n="tab_segments">セグメント</button>
+  <button class="tab" data-tab="train" data-i18n="tab_train">学習</button>
+  <button class="tab" data-tab="test" data-i18n="tab_test">テスト</button>
+  <button class="tab" data-tab="settings" data-i18n="tab_settings">設定</button>
 </nav>
 
 <!-- ═══════════════════════ Tab: データ準備 ═══════════════════════ -->
@@ -29,19 +33,19 @@
 
     <!-- Left: Upload + file list -->
     <div class="panel" style="flex:1;min-width:260px;max-width:360px">
-      <h3>ファイル</h3>
+      <h3 data-i18n="heading_files">ファイル</h3>
       <div id="drop-area">
-        <div class="drop-label">WAV / MP3 をドロップ<br>またはクリックして選択</div>
+        <div class="drop-label" data-i18n-html="drop_label">WAV / MP3 をドロップ<br>またはクリックして選択</div>
         <input type="file" id="file-input" multiple accept=".wav,.mp3" hidden>
       </div>
       <div class="ctrl-row">
-        <button id="btn-clear-data-prep" class="danger">クリア</button>
-        <button id="btn-load-project-state">プロジェクトを読み込む</button>
+        <button id="btn-clear-data-prep" class="danger" data-i18n="btn_clear">クリア</button>
+        <button id="btn-load-project-state" data-i18n="btn_load_project">プロジェクトを読み込む</button>
       </div>
       <div id="file-list" class="item-list"></div>
       <div class="toolbar" style="margin-top:12px;margin-bottom:4px">
         <h3>Projects</h3>
-        <button id="btn-refresh-data-datasets" class="icon-btn" title="Refresh">↻</button>
+        <button id="btn-refresh-data-datasets" class="icon-btn" data-i18n-attr="title:btn_refresh_title" title="Refresh">↻</button>
       </div>
       <input type="file" id="dataset-folder-input" webkitdirectory directory multiple hidden>
       <div id="dataset-project-list" class="dataset-list">
@@ -51,7 +55,7 @@
 
     <!-- Right: Waveform + controls -->
     <div class="panel" style="flex:2" id="waveform-panel">
-      <h3>波形 <span id="waveform-filename" class="dim"></span></h3>
+      <h3><span data-i18n="heading_waveform">波形</span> <span id="waveform-filename" class="dim"></span></h3>
 
       <!-- Waveform wrapper (relative, holds overlays) -->
       <div id="waveform-wrap">
@@ -63,7 +67,7 @@
         <!-- selection box (pointer-events off) -->
         <div id="wf-sel" class="wf-layer hidden"></div>
       </div>
-      <div id="waveform-time" class="dim">ファイルを選択してください</div>
+      <div id="waveform-time" class="dim" data-i18n="waveform_idle">ファイルを選択してください</div>
 
       <!-- File info (shown after load) -->
       <div id="file-info-bar" class="hidden">
@@ -73,46 +77,46 @@
       <!-- Selection toolbar (shown when range selected) -->
       <div id="sel-toolbar" class="ctrl-row">
         <span id="sel-info" class="dim" style="font-size:11px"></span>
-        <button id="btn-play-sel">選択範囲を再生</button>
-        <button id="btn-extract-sel">選択範囲をセグメントに追加</button>
-        <button id="btn-markers-at-sel">端にマーカーを追加</button>
-        <button id="btn-delete-sel" class="danger">選択範囲を削除</button>
-        <button id="btn-clear-sel" class="icon-btn" title="選択解除">✕</button>
+        <button id="btn-play-sel" data-i18n="btn_play_sel">選択範囲を再生</button>
+        <button id="btn-extract-sel" data-i18n="btn_extract_sel">選択範囲をセグメントに追加</button>
+        <button id="btn-markers-at-sel" data-i18n="btn_markers_at_sel">端にマーカーを追加</button>
+        <button id="btn-delete-sel" class="danger" data-i18n="btn_delete_sel">選択範囲を削除</button>
+        <button id="btn-clear-sel" class="icon-btn" data-i18n-attr="title:btn_clear_sel_title" title="選択解除">✕</button>
       </div>
 
       <div id="waveform-controls" class="hidden">
         <div class="ctrl-row">
           <button id="btn-play-pause" class="icon-btn">▶</button>
           <span id="time-display" class="dim" style="min-width:120px">0.0 / 0.0 s</span>
-          <button id="btn-loop" class="icon-btn" title="ループ再生">↩</button>
-          <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="0.8" title="音量" style="width:80px">
+          <button id="btn-loop" class="icon-btn" data-i18n-attr="title:btn_loop_title" title="ループ再生">↩</button>
+          <input type="range" id="volume-slider" min="0" max="1" step="0.02" value="0.8" data-i18n-attr="title:volume_title" title="音量" style="width:80px">
           <span class="dim" style="font-size:13px">🔊</span>
         </div>
 
         <div class="ctrl-section">
-          <strong>セグメントに追加</strong>
+          <strong data-i18n="section_add_to_segments">セグメントに追加</strong>
           <div class="ctrl-row">
-            <button id="btn-add-whole">ファイル全体を1セグメントに追加</button>
+            <button id="btn-add-whole" data-i18n="btn_add_whole">ファイル全体を1セグメントに追加</button>
           </div>
         </div>
 
         <div class="ctrl-section">
-          <strong>マーカー（分割地点）</strong>
+          <strong data-i18n="section_markers">マーカー（分割地点）</strong>
           <div class="ctrl-row wrap">
             <label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)">
-              最小無音長 <input type="number" id="min-silence" value="700" min="100" max="5000" step="100" style="width:70px"> ms
+              <span data-i18n="label_min_silence">最小無音長</span> <input type="number" id="min-silence" value="700" min="100" max="5000" step="100" style="width:70px"> ms
             </label>
             <label style="flex-direction:row;align-items:center;gap:4px;color:var(--text)">
-              無音閾値 <input type="number" id="silence-thresh" value="-40" min="-80" max="-5" step="1" style="width:60px"> dB
+              <span data-i18n="label_silence_thresh">無音閾値</span> <input type="number" id="silence-thresh" value="-40" min="-80" max="-5" step="1" style="width:60px"> dB
             </label>
-            <button id="btn-auto-markers">自動マーカー検出</button>
+            <button id="btn-auto-markers" data-i18n="btn_auto_markers">自動マーカー検出</button>
             <span style="color:var(--dim);font-size:11px">|</span>
-            <button id="btn-add-marker">現在位置にマーカー追加</button>
-            <button id="btn-clear-markers">全マーカーをクリア</button>
+            <button id="btn-add-marker" data-i18n="btn_add_marker">現在位置にマーカー追加</button>
+            <button id="btn-clear-markers" data-i18n="btn_clear_markers">全マーカーをクリア</button>
           </div>
           <div id="markers-list" class="markers-list" style="margin-top:4px"></div>
           <div class="ctrl-row" style="margin-top:6px">
-            <button id="btn-apply-split" class="primary">マーカーで分割してセグメント作成</button>
+            <button id="btn-apply-split" class="primary" data-i18n="btn_apply_split">マーカーで分割してセグメント作成</button>
           </div>
         </div>
       </div>
@@ -124,9 +128,9 @@
 <!-- ═══════════════════════ Tab: セグメント ═══════════════════════ -->
 <div id="tab-segments" class="tab-content">
   <div class="toolbar">
-    <h3>セグメント一覧 <span id="seg-count" class="badge">0</span></h3>
+    <h3><span data-i18n="heading_segments">セグメント一覧</span> <span id="seg-count" class="badge">0</span></h3>
     <div class="toolbar-actions">
-      <button id="btn-transcribe-all" class="primary">全セグメント文字起こし</button>
+      <button id="btn-transcribe-all" class="primary" data-i18n="btn_transcribe_all">全セグメント文字起こし</button>
       <span id="transcribe-progress" class="dim"></span>
     </div>
   </div>
@@ -139,38 +143,38 @@
   <div class="train-sections">
 
     <section class="card">
-      <h3><span class="step-badge">1</span> データセット構築</h3>
+      <h3><span class="step-badge">1</span> <span data-i18n="train_step1">データセット構築</span></h3>
       <div class="form-grid">
-        <label>キャラクター名（speaker） <input type="text" id="speaker-name" placeholder="例: テンプレちゃん"></label>
-        <label>出力先データセット名（フォルダ名） <input type="text" id="job-name" placeholder="空欄でキャラクター名と同じ"></label>
+        <label><span data-i18n="label_speaker_name">キャラクター名（speaker）</span> <input type="text" id="speaker-name" data-i18n-attr="placeholder:placeholder_speaker_name" placeholder="例: テンプレちゃん"></label>
+        <label><span data-i18n="label_job_name">出力先データセット名（フォルダ名）</span> <input type="text" id="job-name" data-i18n-attr="placeholder:placeholder_job_name" placeholder="空欄でキャラクター名と同じ"></label>
       </div>
-      <div id="dataset-dirty-msg" class="hidden" style="font-size:12px;color:var(--warning);margin:4px 0">
+      <div id="dataset-dirty-msg" class="hidden" style="font-size:12px;color:var(--warning);margin:4px 0" data-i18n="dataset_dirty_msg">
         ⚠ セグメントが変更されています。反映するには再度「データセット構築」を実行してください。
       </div>
       <div class="action-row">
-        <button id="btn-build-dataset" class="primary">データセット構築</button>
+        <button id="btn-build-dataset" class="primary" data-i18n="btn_build_dataset">データセット構築</button>
         <span id="build-result" class="dim"></span>
       </div>
       <div id="build-paths" class="hidden" style="font-size:11px;color:var(--dim);margin-top:6px;line-height:1.8"></div>
     </section>
 
     <section class="card">
-      <h3><span class="step-badge">2</span> Manifest 準備（Latent 計算）</h3>
+      <h3><span class="step-badge">2</span> <span data-i18n="train_step2">Manifest 準備（Latent 計算）</span></h3>
       <div class="form-grid">
         <label>Device
           <select id="prep-device"><option>auto</option><option>cuda</option><option>xpu</option><option>mps</option><option>cpu</option></select>
         </label>
-        <label>正規化 dB <input type="text" id="normalize-db" value="-16.0"></label>
-        <label>最大秒数 <input type="number" id="max-seconds" value="0" step="0.5" min="0"> <span class="dim">(0=無制限)</span></label>
+        <label><span data-i18n="label_normalize_db">正規化 dB</span> <input type="text" id="normalize-db" value="-16.0"></label>
+        <label><span data-i18n="label_max_seconds">最大秒数</span> <input type="number" id="max-seconds" value="0" step="0.5" min="0"> <span class="dim" data-i18n="hint_unlimited">(0=無制限)</span></label>
       </div>
       <div class="action-row">
-        <button id="btn-prepare-manifest" class="primary">Manifest 準備実行</button>
+        <button id="btn-prepare-manifest" class="primary" data-i18n="btn_prepare_manifest">Manifest 準備実行</button>
         <span id="manifest-result" class="dim"></span>
       </div>
     </section>
 
     <section class="card">
-      <h3><span class="step-badge">3</span> 学習</h3>
+      <h3><span class="step-badge">3</span> <span data-i18n="train_step3">学習</span></h3>
       <div class="form-grid">
         <label>Device
           <select id="train-device"><option>auto</option><option>cuda</option><option>xpu</option><option>mps</option><option>cpu</option></select>
@@ -184,18 +188,18 @@
         <label>Speaker tokens <input type="number" id="tokens" value="16" min="1"></label>
         <label>Learning rate <input type="number" id="lr" value="0.01" step="0.001"></label>
         <label>Save every <input type="number" id="save-every" value="250" min="1"></label>
-        <label style="grid-column:span 2">Init embedding <input type="text" id="init-embedding" placeholder="既存の .speaker.safetensors パス（任意）" style="width:100%"></label>
+        <label style="grid-column:span 2">Init embedding <input type="text" id="init-embedding" data-i18n-attr="placeholder:placeholder_init_embedding" placeholder="既存の .speaker.safetensors パス（任意）" style="width:100%"></label>
       </div>
       <div class="action-row">
-        <button id="btn-train" class="primary">学習開始</button>
-        <button id="btn-stop-train" class="danger hidden">停止</button>
+        <button id="btn-train" class="primary" data-i18n="btn_train_start">学習開始</button>
+        <button id="btn-stop-train" class="danger hidden" data-i18n="btn_stop">停止</button>
       </div>
     </section>
 
   </div>
 
     <section class="card log-card train-log-card">
-      <h3>ログ</h3>
+      <h3 data-i18n="heading_log">ログ</h3>
       <div id="train-log" class="log-output"></div>
     </section>
   </div>
@@ -206,42 +210,42 @@
   <div class="panel-row">
 
     <div class="panel card" style="flex:1">
-      <h3>生成設定</h3>
+      <h3 data-i18n="heading_gen_settings">生成設定</h3>
       <div class="form-grid">
         <label style="grid-column:span 2">Speaker Embedding
           <div class="input-row">
             <select id="embed-select" style="flex:1">
-              <option value="">-- 選択 --</option>
+              <option value="" data-i18n="embed_select_placeholder">-- 選択 --</option>
             </select>
-            <button id="btn-refresh-runs" title="更新">⟳</button>
+            <button id="btn-refresh-runs" data-i18n-attr="title:btn_refresh_title" title="更新">⟳</button>
           </div>
         </label>
         <label style="grid-column:span 2">Step Embeddings
           <select id="step-embed-select" size="6" style="width:100%;font-family:monospace;font-size:12px">
-            <option value="" disabled>-- run を選択すると表示されます --</option>
+            <option value="" disabled data-i18n="step_embed_placeholder">-- run を選択すると表示されます --</option>
           </select>
         </label>
-        <label style="grid-column:span 2">Speaker Embedding 直接パス（.speaker.safetensors）
-          <input type="text" id="embed-path-custom" placeholder="一覧にない .speaker.safetensors を指定する場合">
+        <label style="grid-column:span 2"><span data-i18n="label_embed_path_custom">Speaker Embedding 直接パス（.speaker.safetensors）</span>
+          <input type="text" id="embed-path-custom" data-i18n-attr="placeholder:placeholder_embed_path_custom" placeholder="一覧にない .speaker.safetensors を指定する場合">
         </label>
-        <label style="grid-column:span 2">テキスト
+        <label style="grid-column:span 2"><span data-i18n="label_test_text">テキスト</span>
           <textarea id="test-text" rows="4">こんにちは。今日もよろしくお願いします。</textarea>
         </label>
         <label>Steps <input type="number" id="gen-steps" value="20" min="1"></label>
         <label>Seed <input type="number" id="gen-seed" value="-1"> <span class="dim">(-1=random)</span></label>
       </div>
       <div class="action-row">
-        <button id="btn-generate" class="primary">音声生成</button>
+        <button id="btn-generate" class="primary" data-i18n="btn_generate">音声生成</button>
       </div>
 
       <div id="output-section" class="hidden" style="margin-top:16px">
-        <h4>生成結果</h4>
+        <h4 data-i18n="heading_output">生成結果</h4>
         <audio id="output-audio" controls style="width:100%"></audio>
       </div>
     </div>
 
     <div class="panel card log-card" style="flex:1">
-      <h3>ログ</h3>
+      <h3 data-i18n="heading_log">ログ</h3>
       <div id="gen-log" class="log-output"></div>
     </div>
 
@@ -251,24 +255,24 @@
 <!-- ═══════════════════════ Tab: 設定 ═══════════════════════ -->
 <div id="tab-settings" class="tab-content">
   <div class="card" style="max-width:680px">
-    <h3>設定</h3>
+    <h3 data-i18n="heading_settings">設定</h3>
     <div class="form-grid">
-      <label style="grid-column:span 2">Irodori-TTS ルートパス
+      <label style="grid-column:span 2"><span data-i18n="label_irodori_root">Irodori-TTS ルートパス</span>
         <div class="input-row">
           <input type="text" id="set-irodori-root" placeholder="例: C:\path\to\Irodori-TTS-v3">
-          <button type="button" id="btn-browse-root-settings">参照</button>
-          <button type="button" id="btn-open-root-modal">指定</button>
+          <button type="button" id="btn-browse-root-settings" data-i18n="btn_browse">参照</button>
+          <button type="button" id="btn-open-root-modal" data-i18n="btn_specify">指定</button>
         </div>
       </label>
-      <label style="grid-column:span 2">uv 実行ファイル
+      <label style="grid-column:span 2"><span data-i18n="label_uv_exe">uv 実行ファイル</span>
         <input type="text" id="set-uv-exe" placeholder="空欄で自動検出 (PATH / ~/.local/bin/uv)">
       </label>
-      <label style="grid-column:span 2">ベースチェックポイント
+      <label style="grid-column:span 2"><span data-i18n="label_checkpoint">ベースチェックポイント</span>
         <input type="text" id="set-checkpoint" placeholder="空欄でデフォルト">
       </label>
     </div>
     <div class="action-row">
-      <button id="btn-save-settings" class="primary">設定を保存</button>
+      <button id="btn-save-settings" class="primary" data-i18n="btn_save_settings">設定を保存</button>
       <span id="settings-status" class="dim"></span>
     </div>
   </div>
@@ -281,22 +285,23 @@
 
 <div id="irodori-root-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="irodori-root-title">
   <div class="modal-card">
-    <h3 id="irodori-root-title">Irodori-TTS v3 ルートディレクトリ</h3>
-    <p class="dim">学習・生成に使うIrodori-TTS-v3本体のフォルダを指定してください。</p>
-    <label>Irodori-TTS ルートパス
+    <h3 id="irodori-root-title" data-i18n="modal_root_title">Irodori-TTS v3 ルートディレクトリ</h3>
+    <p class="dim" data-i18n="modal_root_desc">学習・生成に使うIrodori-TTS-v3本体のフォルダを指定してください。</p>
+    <label><span data-i18n="label_irodori_root">Irodori-TTS ルートパス</span>
       <div class="input-row">
         <input type="text" id="modal-irodori-root" placeholder="例: C:\path\to\Irodori-TTS-v3">
-        <button type="button" id="btn-browse-root-modal">参照</button>
+        <button type="button" id="btn-browse-root-modal" data-i18n="btn_browse">参照</button>
       </div>
     </label>
     <div class="action-row">
-      <button type="button" id="btn-save-root-modal" class="primary">保存</button>
-      <button type="button" id="btn-close-root-modal">閉じる</button>
+      <button type="button" id="btn-save-root-modal" class="primary" data-i18n="btn_save">保存</button>
+      <button type="button" id="btn-close-root-modal" data-i18n="btn_close">閉じる</button>
       <span id="root-modal-status" class="dim"></span>
     </div>
   </div>
 </div>
 
+<script src="/static/i18n.js"></script>
 <script src="/static/wavesurfer.min.js"></script>
 <script src="/static/app.js" defer></script>
 </body>

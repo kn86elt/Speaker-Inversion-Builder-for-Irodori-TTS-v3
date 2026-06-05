@@ -14,12 +14,14 @@ var suggestedIrodoriRoot = '';
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
-  bindUI();
-  loadSettings();
-  refreshState();
-  refreshRuns();
-  refreshDatasets();
-  refreshDataDatasetProjects();
+  (window.I18N ? I18N._ready : Promise.resolve()).then(function () {
+    bindUI();
+    loadSettings();
+    refreshState();
+    refreshRuns();
+    refreshDatasets();
+    refreshDataDatasetProjects();
+  });
 });
 
 // ─── Spinner helper ───────────────────────────────────────────────────────────
@@ -296,7 +298,7 @@ function extractSelection() {
 
 function deleteSelection() {
   if (!currentFileId || !hasSelectionRange()) return;
-  if (!confirm('選択範囲を削除します。続行しますか？')) return;
+  if (!confirm(t('confirm_delete_sel'))) return;
   var fileId = currentFileId;
   var start = selStart(), end = selEnd();
   var btn = document.getElementById('btn-delete-sel');
@@ -372,7 +374,7 @@ function showRootModal(required) {
   var status = document.getElementById('root-modal-status');
   input.value = settings.irodori_root || document.getElementById('set-irodori-root').value.trim() || '';
   input.placeholder = suggestedIrodoriRoot || 'C:/path/to/Irodori-TTS-v3';
-  status.textContent = required ? '初回設定が必要です' : '';
+  status.textContent = required ? t('root_modal_first_time') : '';
   document.getElementById('btn-close-root-modal').disabled = required && !settings.irodori_root;
   modal.classList.remove('hidden');
   setTimeout(function () { input.focus(); }, 0);
@@ -386,7 +388,7 @@ function browseIrodoriRoot(inputId, statusId, btn) {
   var status = document.getElementById(statusId);
   var run = function () {
     if (status) {
-      status.textContent = 'フォルダを選択してください...';
+      status.textContent = t('browsing_folder');
       status.style.color = 'var(--dim)';
     }
     return api('/api/browse/irodori_root').then(function (res) {
@@ -396,13 +398,13 @@ function browseIrodoriRoot(inputId, statusId, btn) {
       }
       document.getElementById(inputId).value = res.path;
       if (status) {
-        status.textContent = '選択しました';
+        status.textContent = t('folder_selected');
         status.style.color = 'var(--success)';
       }
       return res;
     }).catch(function (e) {
       if (status) {
-        status.textContent = '参照エラー: ' + e.message;
+        status.textContent = t('browse_error') + e.message;
         status.style.color = 'var(--danger)';
       }
       throw e;
@@ -415,7 +417,7 @@ function saveRootModal() {
   var root = document.getElementById('modal-irodori-root').value.trim();
   var status = document.getElementById('root-modal-status');
   if (!root) {
-    status.textContent = 'パスを入力してください';
+    status.textContent = t('error_no_path');
     status.style.color = 'var(--danger)';
     return;
   }
@@ -463,7 +465,7 @@ function handleFileUpload(fileList) {
   }).catch(function (e) {
     alert('Upload error: ' + e.message);
   }).finally(function () {
-    drop.innerHTML = '<div class="drop-label">WAV / MP3 をドロップ<br>またはクリックして選択</div><input type="file" id="file-input" multiple accept=".wav,.mp3" hidden>';
+    drop.innerHTML = '<div class="drop-label" data-i18n-html="drop_label">' + t('drop_label') + '</div><input type="file" id="file-input" multiple accept=".wav,.mp3" hidden>';
     document.getElementById('file-input').addEventListener('change', function (e) { handleFileUpload(e.target.files); });
   });
 }
@@ -471,7 +473,7 @@ function handleFileUpload(fileList) {
 // ─── File list ────────────────────────────────────────────────────────────────
 function importDatasetFolder(fileList) {
   if (!fileList || !fileList.length) return;
-  if (!confirm('現在のデータ準備状態をクリアして、選択したプロジェクトを読み込みます。続行しますか？')) return;
+  if (!confirm(t('confirm_import_folder'))) return;
   var form = new FormData();
   for (var i = 0; i < fileList.length; i++) {
     var file = fileList[i];
@@ -494,14 +496,14 @@ function importDatasetFolder(fileList) {
 }
 
 function clearDataPrep() {
-  if (!confirm('現在のデータ準備状態をクリアします。続行しますか？')) return;
+  if (!confirm(t('confirm_clear_data_prep'))) return;
   api('/api/clear_data_prep', 'POST', {}).then(function () {
     currentFileId = null;
     splitMarkers = [];
     clearSelection();
     if (wavesurfer) { wavesurfer.destroy(); wavesurfer = null; }
     document.getElementById('waveform-filename').textContent = '';
-    document.getElementById('waveform-time').textContent = 'ファイルを選択してください';
+    document.getElementById('waveform-time').textContent = t('waveform_idle');
     document.getElementById('waveform-controls').classList.add('hidden');
     document.getElementById('file-info-bar').classList.add('hidden');
     resetDatasetBuildForm();
@@ -924,7 +926,7 @@ function transcribeAll() {
   setBtnProgress('...');
 
   fetchSSE('/api/transcribe_all', 'POST', null, function (event) {
-    if (event.total !== undefined) setBtnProgress('0 / ' + event.total + ' 完了');
+    if (event.total !== undefined) setBtnProgress('0 / ' + event.total + ' ' + t('transcribe_done'));
     if (event.progress !== undefined) {
       if (event.error) {
         failed += 1;
@@ -937,7 +939,7 @@ function transcribeAll() {
           if (card) { card.querySelector('.seg-text').value = event.text; card.classList.remove('untranscribed'); }
         }
       }
-      setBtnProgress(event.progress + ' / ' + event.total + (failed ? ' (' + failed + ' failed)' : ' 完了'));
+      setBtnProgress(event.progress + ' / ' + event.total + (failed ? ' (' + failed + ' failed)' : ' ' + t('transcribe_done')));
     }
     if (event.done) prog.textContent = failed ? 'Done (' + failed + ' failed)' : 'Done';
   }).catch(function (e) {
@@ -990,7 +992,7 @@ function buildDataset(overwrite) {
   paths.classList.add('hidden');
   var names = getDatasetNames();
   if (!names.jobName) {
-    result.textContent = 'キャラクター名または出力先データセット名を入力してください';
+    result.textContent = t('error_no_job_name');
     result.style.color = 'var(--danger)';
     return Promise.resolve();
   }
@@ -1042,7 +1044,7 @@ function refreshDatasets() {
     var el = document.getElementById('dataset-list');
     if (!el) return;
     if (!data.datasets.length) {
-      el.innerHTML = '<span class="dim" style="font-size:12px">データセットなし</span>';
+      el.innerHTML = '<span class="dim" style="font-size:12px">' + t('no_datasets') + '</span>';
       return;
     }
     el.innerHTML = '';
@@ -1054,7 +1056,7 @@ function refreshDatasets() {
         '<span class="ds-badge ' + (ds.has_source ? 'ok' : 'dim') + '">source</span>' +
         '<span class="ds-badge ' + (ds.has_manifest ? 'ok' : 'dim') + '">manifest</span>' +
         '<span class="ds-badge ' + (ds.has_embedding ? 'ok' : 'dim') + '">embedding</span>' +
-        '<span class="dim" style="font-size:11px">' + ds.segment_count + '件</span>' +
+        '<span class="dim" style="font-size:11px">' + ds.segment_count + t('unit_segments') + '</span>' +
         '<button class="load-ds-btn" data-name="' + esc(ds.name) + '">Load</button>';
       row.querySelector('.load-ds-btn').addEventListener('click', (function (name) {
         return function () { loadDatasetProject(name); };
@@ -1095,7 +1097,7 @@ function loadDatasetProject(name) {
 function prepareManifest() {
   if (!ensureIrodoriRoot()) return Promise.resolve();
   var names = getDatasetNames();
-  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return Promise.resolve(); }
+  if (!names.jobName) { setStatus(t('error_no_job_name'), true); return Promise.resolve(); }
   document.getElementById('job-name').value = names.jobName;
   var log = document.getElementById('train-log');
   var result = document.getElementById('manifest-result');
@@ -1114,15 +1116,15 @@ function prepareManifest() {
     handleLogEvent(ev, log);
     if (ev.done) {
       if (ev.rc === 0) {
-        result.textContent = 'Manifest 準備完了';
+        result.textContent = t('manifest_success');
         result.style.color = 'var(--success)';
       } else {
-        result.textContent = 'Manifest 準備失敗';
+        result.textContent = t('manifest_failed');
         result.style.color = 'var(--danger)';
       }
     }
   }).catch(function (e) {
-    result.textContent = 'Manifest 準備失敗';
+    result.textContent = t('manifest_failed');
     result.style.color = 'var(--danger)';
     appendLog(log, 'Error: ' + e.message + '\n', 'log-error');
   });
@@ -1131,7 +1133,7 @@ function prepareManifest() {
 function startTraining() {
   if (!ensureIrodoriRoot()) return;
   var names = getDatasetNames();
-  if (!names.jobName) { setStatus('キャラクター名または出力先データセット名を入力してください', true); return; }
+  if (!names.jobName) { setStatus(t('error_no_job_name'), true); return; }
   document.getElementById('job-name').value = names.jobName;
   var log = document.getElementById('train-log');
   log.textContent = '';
@@ -1189,7 +1191,7 @@ function updateStepEmbedList() {
   stepSel.innerHTML = '';
   if (!run) {
     var opt = document.createElement('option');
-    opt.value = ''; opt.textContent = '-- run を選択すると表示されます --';
+    opt.value = ''; opt.textContent = t('step_embed_placeholder');
     opt.disabled = true;
     stepSel.appendChild(opt);
     return;
